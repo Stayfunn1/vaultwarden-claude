@@ -204,6 +204,7 @@ export async function importKeePassDialog(app) {
                         opt("tagsField", "Keep tags in a \"Tags\" field"),
                         opt("expiryField", "Keep expiry dates in an \"Expires\" field"),
                         opt("importIcons", "Import the icons of entries and groups"),
+                        opt("importDates", "Keep the creation and modification dates"),
                         opt("includeRecycleBin", "Include the recycle bin"),
                         h("label", { class: "check" }, skip, "Skip entries that already exist (same folder, title and user name)"),
                     ),

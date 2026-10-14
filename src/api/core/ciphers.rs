@@ -317,6 +317,32 @@ pub struct CipherData {
     // updating an existing cipher.
     last_known_revision_date: Option<String>,
     archived_date: Option<String>,
+
+    // The original creation and modification date of an imported item (e.g. from KeePass). Only used when a
+    // cipher is created or imported, the official clients do not send them.
+    creation_date: Option<String>,
+    revision_date: Option<String>,
+}
+
+/// The creation and revision date of a new cipher from `CipherData`, when given: never in the future, and the
+/// revision date never before the creation date
+fn imported_dates(creation_date: Option<&str>, revision_date: Option<&str>) -> Option<(NaiveDateTime, NaiveDateTime)> {
+    let parse = |s: &str| match chrono::DateTime::parse_from_rfc3339(s) {
+        Ok(dt) => Some(dt.naive_utc()),
+        Err(err) => {
+            warn!("Error parsing imported date '{s}': {err}");
+            None
+        }
+    };
+    let created = creation_date.and_then(parse);
+    let updated = revision_date.and_then(parse);
+    if created.is_none() && updated.is_none() {
+        return None;
+    }
+    let now = Utc::now().naive_utc();
+    let created = created.unwrap_or_else(|| updated.unwrap_or(now)).min(now);
+    let updated = updated.unwrap_or(created).min(now).max(created);
+    Some((created, updated))
 }
 
 #[derive(Debug, Deserialize)]
@@ -573,6 +599,13 @@ pub async fn update_cipher_from_data(
     cipher.password_history = data.password_history.map(|f| f.to_string());
     cipher.reprompt = data.reprompt.filter(|r| *r == RepromptType::None as i32 || *r == RepromptType::Password as i32);
 
+    // Imported items keep their original dates, other changes get the current time
+    let dates = if matches!(ut, UpdateType::None | UpdateType::SyncCipherCreate) {
+        imported_dates(data.creation_date.as_deref(), data.revision_date.as_deref())
+    } else {
+        None
+    };
+
     cipher.save(conn).await?;
     cipher.move_to_folder(data.folder_id, &headers.user.uuid, conn).await?;
     cipher.set_favorite(data.favorite, &headers.user.uuid, conn).await?;
@@ -583,6 +616,10 @@ pub async fn update_cipher_from_data(
             Err(err) => warn!("Error parsing ArchivedDate '{dt_str}': {err}"),
         },
         None => cipher.unarchive(&headers.user.uuid, conn).await?,
+    }
+
+    if let Some((created_at, updated_at)) = dates {
+        cipher.set_dates(created_at, updated_at, conn).await?;
     }
 
     if ut != UpdateType::None {
@@ -2256,5 +2293,38 @@ impl CipherSyncData {
             user_collections_groups,
             user_group_full_access_for_organizations,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn imported_dates_are_checked() {
+        let dt = |s: &str| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").unwrap();
+        assert_eq!(imported_dates(None, None), None);
+        assert_eq!(
+            imported_dates(Some("2015-03-04T05:06:07Z"), Some("2019-08-09T10:11:12.000Z")),
+            Some((dt("2015-03-04 05:06:07"), dt("2019-08-09 10:11:12")))
+        );
+        // Only one of them, or a revision before the creation
+        assert_eq!(
+            imported_dates(Some("2015-03-04T05:06:07Z"), None),
+            Some((dt("2015-03-04 05:06:07"), dt("2015-03-04 05:06:07")))
+        );
+        assert_eq!(
+            imported_dates(None, Some("2019-08-09T10:11:12+02:00")),
+            Some((dt("2019-08-09 08:11:12"), dt("2019-08-09 08:11:12")))
+        );
+        assert_eq!(
+            imported_dates(Some("2019-01-01T00:00:00Z"), Some("2018-01-01T00:00:00Z")),
+            Some((dt("2019-01-01 00:00:00"), dt("2019-01-01 00:00:00")))
+        );
+        // Never in the future
+        let (created, updated) = imported_dates(Some("2099-01-01T00:00:00Z"), Some("2099-01-02T00:00:00Z")).unwrap();
+        assert!(created <= Utc::now().naive_utc() && updated <= Utc::now().naive_utc());
+        // Invalid values are ignored
+        assert_eq!(imported_dates(Some("yesterday"), None), None);
     }
 }

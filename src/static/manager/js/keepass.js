@@ -31,6 +31,7 @@ export const DEFAULT_OPTIONS = {
     tagsField: true,
     expiryField: true,
     importIcons: true,
+    importDates: true,
     targetFolder: "",
 };
 
@@ -343,6 +344,25 @@ function iconOf(db, item, defaultIcon) {
     return null;
 }
 
+function isoDate(value) {
+    const d = value ? new Date(value) : null;
+    return d && !isNaN(d) && d.getFullYear() > 1970 ? d.toISOString() : null;
+}
+
+// When the current password was set: the oldest state of the entry, going back through its history, which already
+// had the current password. Null when the password never changed.
+function passwordChangedAt(entry, resolve, current) {
+    const history = entry.history || [];
+    if (!current || !history.length) return null;
+    let since = isoDate(entry.times?.lastModTime);
+    for (let i = history.length - 1; i >= 0; i--) {
+        const h = history[i];
+        if (resolve(fieldText(h.fields.get("Password"))) !== current) return since;
+        since = isoDate(h.times?.lastModTime) || since;
+    }
+    return null;
+}
+
 function hostOf(url) {
     try {
         return new URL(url).hostname;
@@ -352,7 +372,7 @@ function hostOf(url) {
 }
 
 // Convert an opened database to entries ready for import.
-// Returns { entries: [{ view, folderPath, attachments: [{fileName, data}], sourceTitle, icon }], folderPaths,
+// Returns { entries: [{ view, folderPath, attachments: [{fileName, data}], sourceTitle, icon, dates: { created, modified } }], folderPaths,
 // groupIcons: Map(folder path -> icon), stats, warnings }
 export function convertKeePass(db, opts = {}) {
     const options = { ...DEFAULT_OPTIONS, ...opts };
@@ -364,7 +384,7 @@ export function convertKeePass(db, opts = {}) {
     const resolve = (v) => (resolver ? resolver.resolve(v) : v);
 
     const warnings = [];
-    const stats = { groups: 0, entries: 0, attachments: 0, attachmentBytes: 0, fields: 0, totp: 0, references: 0, icons: 0 };
+    const stats = { groups: 0, entries: 0, attachments: 0, attachmentBytes: 0, fields: 0, totp: 0, references: 0, icons: 0, dates: 0 };
     const folderPaths = new Set();
     const groupIcons = new Map();
     const entries = [];
@@ -462,7 +482,17 @@ export function convertKeePass(db, opts = {}) {
 
             const entryIcon = options.importIcons ? iconOf(db, entry, DEFAULT_ENTRY_ICON) : null;
             if (entryIcon) stats.icons++;
-            entries.push({ view, folderPath: path, attachments, sourceTitle: view.name, icon: entryIcon });
+
+            // The dates of KeePass: created and last modified, and when the password was changed
+            let dates = null;
+            if (options.importDates) {
+                dates = { created: isoDate(entry.times?.creationTime), modified: isoDate(entry.times?.lastModTime) };
+                if (!dates.created && !dates.modified) dates = null;
+                const changed = passwordChangedAt(entry, resolve, view.login.password);
+                if (changed) view.login.passwordRevisionDate = changed;
+                if (dates) stats.dates++;
+            }
+            entries.push({ view, folderPath: path, attachments, sourceTitle: view.name, icon: entryIcon, dates });
         }
     }
 
