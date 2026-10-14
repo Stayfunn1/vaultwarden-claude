@@ -28,6 +28,9 @@ An alternative server implementation of the Bitwarden Client API, written in Rus
 
 ## Additions in this fork
 
+**Installation: see [docs/INSTALL.md](docs/INSTALL.md)** (build the image, Docker Compose with HTTPS, KeePass import,
+Bitwarden apps, SSO only, backups and updates).
+
  * **Web manager** at `/manager/`: a compact, KeePass 2 style vault manager for large vaults, with a real folder
    tree (drag & drop, renaming and moving whole folder trees, cleanup tools), a dense entry list, KeePass keyboard
    shortcuts and an entry editor for custom fields, attachments, TOTP and history. All encryption happens in the
