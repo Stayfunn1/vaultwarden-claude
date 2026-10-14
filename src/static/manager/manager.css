@@ -518,7 +518,7 @@ a {
     display: flex;
     align-items: center;
     gap: 3px;
-    height: 20px;
+    height: calc(var(--row-h, 21px) - 1px);
     padding-right: 6px;
     cursor: default;
     white-space: nowrap;
@@ -666,7 +666,7 @@ a {
 
 .et-row {
     display: flex;
-    height: 21px;
+    height: var(--row-h, 21px);
     align-items: center;
     border: 1px solid transparent;
     cursor: default;
@@ -1533,4 +1533,252 @@ kbd {
 .icon-tile.add {
     font-size: 16px;
     color: var(--muted);
+}
+
+/* ----- Windows ----- */
+
+.modal-title {
+    cursor: default;
+    user-select: none;
+    touch-action: none;
+    gap: 6px;
+}
+
+.modal-title-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.modal-title-icon {
+    display: inline-flex;
+}
+
+.modal-controls {
+    display: inline-flex;
+    gap: 2px;
+}
+
+.modal-ctl {
+    border: none;
+    background: transparent;
+    font-size: 14px;
+    line-height: 1;
+    min-width: 22px;
+    min-height: 0;
+    padding: 1px 4px;
+}
+
+.modal-ctl:hover,
+.modal-x:hover {
+    background: var(--hover);
+}
+
+.modal-x:hover {
+    background: var(--danger);
+    color: #fff;
+}
+
+/* A dialog that was dragged away from the center */
+.modal.placed {
+    position: absolute;
+    margin: 0;
+}
+
+/* Windows stay below the menu bar (it has the Windows menu) and above the taskbar and the status bar */
+.window-layer {
+    position: fixed;
+    left: 0;
+    top: var(--window-top, 0px);
+    right: 0;
+    bottom: var(--window-bottom, 0px);
+    pointer-events: none;
+    z-index: 800;
+}
+
+.window-layer > .modal.window {
+    position: absolute;
+    pointer-events: auto;
+    resize: both;
+    overflow: hidden;
+    min-width: 260px;
+    min-height: 160px;
+    max-width: none;
+    max-height: none;
+}
+
+.window-layer > .modal.window[hidden] {
+    display: none;
+}
+
+.window:not(.active) .modal-title {
+    background: var(--bg);
+    color: var(--muted);
+}
+
+.window.active {
+    box-shadow: 0 6px 22px rgba(0, 0, 0, 0.32);
+}
+
+.window.maximized {
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    resize: none;
+}
+
+/* ----- Taskbar (open windows) ----- */
+
+.taskbar {
+    display: flex;
+    gap: 3px;
+    padding: 2px 6px;
+    border-top: 1px solid var(--border);
+    background: var(--bg);
+    overflow-x: auto;
+}
+
+.taskbar[hidden] {
+    display: none;
+}
+
+.task {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 220px;
+    min-height: 0;
+    padding: 2px 8px;
+    border: 1px solid var(--border-light);
+    background: var(--panel);
+    font: inherit;
+}
+
+.task span:last-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.task.active {
+    background: var(--sel);
+    border-color: var(--sel-border);
+}
+
+.task.minimized {
+    color: var(--muted);
+    font-style: italic;
+}
+
+/* ----- Options: accent color, toolbar, list ----- */
+
+:root.custom-accent {
+    --accent: var(--accent-l);
+    --sel-focus: var(--accent-l);
+    --sel: color-mix(in srgb, var(--accent-l) 20%, #ffffff);
+    --sel-border: color-mix(in srgb, var(--accent-l) 45%, #ffffff);
+    --hover: color-mix(in srgb, var(--accent-l) 9%, #ffffff);
+}
+
+@media (prefers-color-scheme: dark) {
+    :root.custom-accent:not([data-theme="light"]) {
+        --accent: var(--accent-d);
+        --sel-focus: var(--accent-d);
+        --sel: color-mix(in srgb, var(--accent-d) 30%, #2b2b2b);
+        --sel-border: color-mix(in srgb, var(--accent-d) 55%, #2b2b2b);
+        --hover: color-mix(in srgb, var(--accent-d) 14%, #2b2b2b);
+    }
+}
+
+:root.custom-accent[data-theme="dark"] {
+    --accent: var(--accent-d);
+    --sel-focus: var(--accent-d);
+    --sel: color-mix(in srgb, var(--accent-d) 30%, #2b2b2b);
+    --sel-border: color-mix(in srgb, var(--accent-d) 55%, #2b2b2b);
+    --hover: color-mix(in srgb, var(--accent-d) 14%, #2b2b2b);
+}
+
+.tb-label {
+    display: none;
+    margin-left: 4px;
+    white-space: nowrap;
+}
+
+.toolbar-text .tb-label {
+    display: inline;
+}
+
+.toolbar-hidden .toolbar,
+.no-statusbar .statusbar {
+    display: none;
+}
+
+.no-stripes .et-row.odd {
+    background: transparent;
+}
+
+.grid-lines .et-row {
+    border-bottom-color: var(--border-light);
+}
+
+.grid-lines .et-cell {
+    border-right: 1px solid var(--border-light);
+}
+
+.no-mono-passwords .dv.mono,
+.no-mono-passwords .et-password {
+    font-family: inherit;
+}
+
+.pw-digit {
+    color: #1a6fd1;
+}
+
+.pw-special {
+    color: #c4421c;
+}
+
+:root[data-theme="dark"] .pw-digit {
+    color: #6cb4ff;
+}
+
+:root[data-theme="dark"] .pw-special {
+    color: #ff9a6b;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .pw-digit {
+        color: #6cb4ff;
+    }
+
+    :root:not([data-theme="light"]) .pw-special {
+        color: #ff9a6b;
+    }
+}
+
+.options-modal .tab-body {
+    min-height: 330px;
+}
+
+.options-modal .form-label {
+    width: 190px;
+}
+
+.accent-swatch {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 2px;
+    vertical-align: middle;
+}
+
+.modal-buttons .spacer {
+    flex: 1;
+}
+
+.toolbar-text .toolbar {
+    overflow-x: auto;
 }

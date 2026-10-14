@@ -86,14 +86,20 @@ large uploads for attachments (nginx: `client_max_body_size 525m;`).
 
 ### 2b. Admin page (optional)
 
-The admin page (`https://vault.example.com/admin`) manages users, organizations and settings. Protect it
-with a hashed token, generate one with:
+The admin page (`https://vault.example.com/admin`) manages users, organizations and settings. It has its
+own login with a shared secret, the admin token, independent of the vault logins. Generate a hash of a
+long password with:
 
 ```sh
 docker run --rm -it vaultwarden-keepass /vaultwarden hash
 ```
 
-and put the printed `$argon2id$...` value in `ADMIN_TOKEN` (with every `$` doubled, see above).
+and put the printed `$argon2id$...` value in `ADMIN_TOKEN` (with every `$` doubled, see above). On the
+login form of `/admin` you then enter the **password**, not the hash. Leave `ADMIN_TOKEN` out to switch
+the page off.
+
+Settings saved on the admin page are stored in `vw-data/config.json` and override the environment from
+then on. More in [admin-page.md](admin-page.md).
 
 All settings are documented in [.env.template](../.env.template). The ones added by this fork:
 `WEB_MANAGER_ENABLED` (default `true`) and `SSO_ONLY_ALLOW_API_KEY`.

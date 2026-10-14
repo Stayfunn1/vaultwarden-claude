@@ -1,6 +1,6 @@
 // Entry editor dialog, modelled after the "Edit Entry" window of KeePass 2.
 
-import { h, icon, clear, dialog, copyText, formatDate, formatBytes, pickFiles, readFile, safeUrl, toast, confirmDialog } from "./ui.js";
+import { h, icon, clear, dialog, copyText, formatDate, formatBytes, pickFiles, readFile, safeUrl, toast, confirmDialog, settings } from "./ui.js";
 import { CipherType, CipherTypeNames, FieldType, TypeFields, cloneView } from "./vault.js";
 import { generatePassword, passwordEntropy, totpCode } from "./bwcrypto.js";
 import { generatorDialog } from "./dialogs.js";
@@ -40,6 +40,8 @@ function secretInput(value, { readOnly = false, placeholder = "", onInput, multi
             eye.click();
         }
     });
+    // Tools → Options: "Show passwords in the entry editor"
+    if (settings.editorShowPasswords && (value || !readOnly)) eye.click();
     return { input, eye };
 }
 
@@ -74,10 +76,17 @@ export function editEntryDialog(app, original, { isNew = false, readOnly = false
     let pendingIcon; // the new icon chosen in the editor, undefined while unchanged
     let collectionIds = [...(view.collectionIds || [])];
 
+    const action = `${isNew ? "Add" : canEdit ? "Edit" : "View"} ${CipherTypeNames[view.type] || "Entry"}`;
+    const windowTitle = () => (view.name ? `${view.name} – ${action}` : action);
     return dialog({
-        title: `${isNew ? "Add" : canEdit ? "Edit" : "View"} ${CipherTypeNames[view.type] || "Entry"}`,
+        title: windowTitle(),
         className: "editor-modal",
-        build: (close) => {
+        // Entries open in windows, so several can be open next to each other (Tools → Options)
+        window: settings.entryWindows !== false,
+        key: view.id ? `entry:${view.id}` : null,
+        kind: "editor",
+        icon: app.entryIcon(view) || icon(typeIcon(view)),
+        build: (close, win) => {
             const errorBox = h("div", { class: "form-error", role: "alert" });
             const tabs = {};
             const tabBar = h("div", { class: "tabs", role: "tablist" });
@@ -98,7 +107,10 @@ export function editEntryDialog(app, original, { isNew = false, readOnly = false
             // ----- Entry tab -------------------------------------------------------------
             const entry = h("div", { class: "form" });
             const title = h("input", { type: "text", class: "wide", value: view.name || "", readonly: !canEdit });
-            title.addEventListener("input", () => (view.name = title.value));
+            title.addEventListener("input", () => {
+                view.name = title.value;
+                win.setTitle(windowTitle());
+            });
             const iconBtn = h("button", { type: "button", class: "icon-btn entry-icon-btn", title: "Change icon", disabled: !canEdit || !app.icons });
             const showIcon = () => {
                 const current = pendingIcon === undefined ? app.entryIcon(view) : pendingIcon && renderIcon(pendingIcon, typeIcon(view));
@@ -567,6 +579,7 @@ export function editEntryDialog(app, original, { isNew = false, readOnly = false
                 try {
                     const saved = await vault.saveCipher(view, { collectionIds });
                     view.id = saved.id;
+                    win.setKey(`entry:${view.id}`);
                     syncFromVault();
                     stage = "attachments";
                     for (const id of [...deletedAttachments]) {

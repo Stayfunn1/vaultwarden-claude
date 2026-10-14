@@ -49,6 +49,7 @@ Bitwarden apps, SSO only, Keycloak, backups and updates).
  * **Organizations in the web manager**: create organizations, invite and confirm members, roles, groups and
    collection access; KeePass icons for entries, folders and collections; dark mode.
  * Guide for sharing with organizations, collections and groups: [docs/sharing.md](docs/sharing.md).
+ * How the admin page login works and how to protect it: [docs/admin-page.md](docs/admin-page.md).
 
 <br>
 

@@ -1,7 +1,7 @@
 // Organizations: creating them, members (invite, confirm, role, revoke, remove), groups and collection access.
 // Everything goes through the same API as the Bitwarden web vault, so both can be used side by side.
 
-import { h, clear, dialog, confirmDialog, promptDialog, alertDialog, toast } from "./ui.js";
+import { h, icon, clear, dialog, confirmDialog, promptDialog, alertDialog, toast } from "./ui.js";
 
 export const MemberStatus = Object.freeze({ Revoked: -1, Invited: 0, Accepted: 1, Confirmed: 2 });
 const STATUS_NAMES = { [-1]: "Revoked", 0: "Invited", 1: "Needs confirmation", 2: "Confirmed" };
@@ -98,6 +98,10 @@ export function organizationDialog(app, orgId, initialTab = "members") {
         title: `Organization ${org.name}`,
         className: "org-modal",
         width: "860px",
+        window: true,
+        key: `org:${orgId}`,
+        kind: "org",
+        icon: icon("org"),
         build: (close) => {
             const state = { members: [], groups: [], changed: false };
             const tabBar = h("div", { class: "tabs", role: "tablist" });

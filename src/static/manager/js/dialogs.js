@@ -1,6 +1,6 @@
 // Secondary dialogs: password generator, KeePass import, sharing, settings, help.
 
-import { h, icon, clear, dialog, copyText, settings, saveSettings, readFile, formatBytes, progressDialog, alertDialog } from "./ui.js";
+import { h, icon, clear, dialog, copyText, settings, saveSettings, readFile, formatBytes, formatDate, progressDialog, alertDialog, OPTION_KEYS, DEFAULT_SETTINGS as DEFAULTS, ACCENTS } from "./ui.js";
 import { generatePassword, passwordEntropy } from "./bwcrypto.js";
 import { openKeePass, convertKeePass, DEFAULT_OPTIONS } from "./keepass.js";
 import { importEntries } from "./importer.js";
@@ -9,7 +9,9 @@ import { importEntries } from "./importer.js";
 
 const GEN_KEY = "vwm.generator";
 
-export function generatorDialog() {
+// The password generator. Opened on its own (`standalone`) it is a window with a copy button,
+// from the entry editor a dialog which returns the chosen password.
+export function generatorDialog({ standalone = false } = {}) {
     let opts = { length: 20, upper: true, lower: true, digits: true, special: true, extended: false, avoidAmbiguous: true };
     try {
         opts = { ...opts, ...JSON.parse(localStorage.getItem(GEN_KEY) || "{}") };
@@ -18,6 +20,10 @@ export function generatorDialog() {
     }
     return dialog({
         title: "Password Generator",
+        window: standalone,
+        key: standalone ? "generator" : null,
+        kind: standalone ? "generator" : null,
+        icon: icon("key"),
         build: (close) => {
             const out = h("input", { type: "text", class: "wide mono gen-output", readonly: true });
             const bits = h("span", { class: "muted" });
@@ -72,7 +78,12 @@ export function generatorDialog() {
                     h("div", { class: "form-row" }, h("label", { class: "form-label" }, "Password:"), h("div", { class: "form-controls" }, out, h("button", { type: "button", class: "icon-btn", title: "Generate again", onclick: regenerate }, icon("dice")), h("button", { type: "button", class: "icon-btn", title: "Copy", onclick: () => copyText(out.value, "Password") }, icon("copy")))),
                     h("div", { class: "form-row" }, h("label", { class: "form-label" }, ""), bits),
                 ),
-                buttons: [h("button", { type: "button", class: "primary", onclick: () => close(out.value) }, "Use password"), h("button", { type: "button", onclick: () => close(undefined) }, "Close")],
+                buttons: [
+                    standalone
+                        ? h("button", { type: "button", class: "primary", onclick: () => copyText(out.value, "Password") }, "Copy")
+                        : h("button", { type: "button", class: "primary", onclick: () => close(out.value) }, "Use password"),
+                    h("button", { type: "button", onclick: () => close(undefined) }, "Close"),
+                ],
                 onEnter: () => close(out.value),
             };
         },
@@ -309,30 +320,147 @@ export function collectionsDialog(vault, orgId, selected, count = 1) {
 
 // ----- Settings & help -----------------------------------------------------------------------------
 
+// Options, in the spirit of the KeePassXC settings. Changes are applied when the dialog is confirmed.
 export function settingsDialog() {
+    const draft = Object.fromEntries(OPTION_KEYS.map((k) => [k, settings[k]]));
     return dialog({
         title: "Options",
+        className: "options-modal",
+        width: "620px",
         build: (close) => {
-            const clip = h("input", { type: "number", min: 0, max: 600, value: settings.clipboardSeconds, class: "narrow" });
-            const lock = h("input", { type: "number", min: 0, max: 1440, value: settings.lockMinutes, class: "narrow" });
-            const theme = h("select", null, [["auto", "Follow system"], ["light", "Light"], ["dark", "Dark"]].map(([v, l]) => h("option", { value: v, selected: settings.theme === v }, l)));
-            const remember = h("input", { type: "checkbox", checked: settings.rememberEmail });
+            const controls = [];
+            const check = (key, label, title) => {
+                const cb = h("input", { type: "checkbox", checked: !!draft[key], "data-option": key });
+                cb.addEventListener("change", () => (draft[key] = cb.checked));
+                controls.push(() => (cb.checked = !!draft[key]));
+                return h("div", { class: "form-row" }, h("label", { class: "check", title }, cb, label));
+            };
+            const select = (key, label, options, after = null) => {
+                const sel = h("select", { "data-option": key }, options.map(([v, l]) => h("option", { value: v, selected: String(draft[key]) === String(v) }, l)));
+                sel.addEventListener("change", () => {
+                    draft[key] = typeof DEFAULTS[key] === "number" ? Number(sel.value) : sel.value;
+                    after?.();
+                });
+                controls.push(() => (sel.value = String(draft[key])));
+                return h("div", { class: "form-row" }, h("label", { class: "form-label" }, label), h("div", { class: "form-controls" }, sel, after ? after.el : ""));
+            };
+            const number = (key, label, min, max, unit) => {
+                const input = h("input", { type: "number", min, max, value: draft[key], class: "narrow", "data-option": key });
+                input.addEventListener("change", () => (draft[key] = Math.min(max, Math.max(min, parseInt(input.value, 10) || 0))));
+                controls.push(() => (input.value = draft[key]));
+                return h("div", { class: "form-row" }, h("label", { class: "form-label" }, label), h("div", { class: "form-controls" }, input, unit));
+            };
+            const swatch = h("span", { class: "accent-swatch" });
+            const showSwatch = () => (swatch.style.background = (ACCENTS[draft.accent] || ACCENTS.blue)[0]);
+            showSwatch.el = swatch;
+            showSwatch();
+            const dateExample = h("span", { class: "muted" });
+            const showDateExample = () => {
+                const saved = settings.dateFormat;
+                settings.dateFormat = draft.dateFormat;
+                dateExample.textContent = `e.g. ${formatDate(new Date(Date.now() - 3 * 3600_000).toISOString())}`;
+                settings.dateFormat = saved;
+            };
+            showDateExample.el = dateExample;
+            showDateExample();
+
+            const pages = {
+                general: [
+                    h("h4", null, "Entries"),
+                    check("entryWindows", "Open entries in windows (several at once, movable, can be minimized)"),
+                    select("dblClickAction", "Double-click on an entry:", [
+                        ["field", "Copy the user name or password, open the URL (KeePass)"],
+                        ["edit", "Open the entry"],
+                        ["url", "Open the URL"],
+                    ]),
+                    check("confirmDelete", "Ask before moving entries to the trash"),
+                    check("showSubfolderEntries", "Show the entries of sub folders"),
+                    h("h4", null, "Start and synchronization"),
+                    select("startFolder", "After unlocking show:", [
+                        ["last", "The folder used last"],
+                        ["vault", "My vault"],
+                        ["favorites", "Favorites"],
+                    ]),
+                    number("checkMinutes", "Look for changes every:", 0, 120, "minutes (0 = only when the page gets the focus)"),
+                    check("rememberEmail", "Remember my e-mail address on this device"),
+                ],
+                interface: [
+                    h("h4", null, "Appearance"),
+                    select("theme", "Theme:", [
+                        ["auto", "Follow system"],
+                        ["light", "Light"],
+                        ["dark", "Dark"],
+                    ]),
+                    select("accent", "Accent color:", Object.keys(ACCENTS).map((k) => [k, k[0].toUpperCase() + k.slice(1)]), showSwatch),
+                    select("fontSize", "Font size:", [10, 11, 12, 13, 14, 15, 16].map((n) => [n, `${n} px${n === 12 ? " (default)" : ""}`])),
+                    select("density", "Row spacing:", [
+                        ["compact", "Compact"],
+                        ["normal", "Normal"],
+                        ["comfortable", "Comfortable"],
+                    ]),
+                    select("toolbar", "Toolbar:", [
+                        ["icons", "Icons only"],
+                        ["text", "Icons and text"],
+                        ["hidden", "Hidden"],
+                    ]),
+                    check("showStatusBar", "Show the status bar"),
+                    check("showDetails", "Show the entry details below the list"),
+                    check("stripedRows", "Alternating row colors"),
+                    check("gridLines", "Grid lines in the entry list"),
+                    select("dateFormat", "Dates:", [
+                        ["iso", "2026-10-14 16:29"],
+                        ["locale", "Format of the browser"],
+                        ["relative", "Relative (3 hours ago)"],
+                    ], showDateExample),
+                    check("websiteIcons", "Show website icons (loaded through the server)"),
+                    h("h4", null, "Passwords and details"),
+                    check("monoPasswords", "Monospace font for passwords"),
+                    check("colorPasswords", "Color digits and special characters in passwords"),
+                    check("hideUsernames", "Hide user names in the entry list"),
+                    check("showPasswordsInList", "Show passwords in the entry list (not for entries with re-prompt)"),
+                    check("hideNotes", "Hide notes in the details until clicked"),
+                ],
+                security: [
+                    h("h4", null, "Clipboard"),
+                    number("clipboardSeconds", "Clear the clipboard after:", 0, 600, "seconds (0 = never)"),
+                    check("clearClipboardOnLock", "Clear the clipboard when the vault is locked"),
+                    h("h4", null, "Locking"),
+                    number("lockMinutes", "Lock after inactivity:", 0, 1440, "minutes (0 = never)"),
+                    check("lockOnHide", "Lock when the browser tab is hidden or the window is minimized"),
+                    number("lockOnHideSeconds", "… after:", 0, 3600, "seconds"),
+                    h("h4", null, "Editing"),
+                    check("editorShowPasswords", "Show passwords in the entry editor (do not hide them)"),
+                ],
+                search: [
+                    h("h4", null, "Search"),
+                    check("searchPasswords", "Also search passwords and protected fields"),
+                    check("searchCase", "Case sensitive"),
+                    check("searchInFolder", "Only search in the selected folder and its sub folders"),
+                    check("clearSearchOnFolder", "Clear the search when another folder is selected"),
+                ],
+            };
+            const names = { general: "General", interface: "Interface", security: "Security", search: "Search" };
+            const tabBar = h("div", { class: "tabs", role: "tablist" });
+            const tabBody = h("div", { class: "tab-body" });
+            const show = (key) => {
+                for (const b of tabBar.children) b.classList.toggle("active", b.dataset.tab === key);
+                clear(tabBody).appendChild(h("div", { class: "form" }, pages[key]));
+            };
+            for (const key of Object.keys(pages)) tabBar.appendChild(h("button", { type: "button", class: "tab", role: "tab", "data-tab": key, onclick: () => show(key) }, names[key]));
+            show("general");
             return {
-                body: h(
-                    "div",
-                    { class: "form" },
-                    h("div", { class: "form-row" }, h("label", { class: "form-label" }, "Clear clipboard after:"), h("div", { class: "form-controls" }, clip, "seconds (0 = never)")),
-                    h("div", { class: "form-row" }, h("label", { class: "form-label" }, "Lock after inactivity:"), h("div", { class: "form-controls" }, lock, "minutes (0 = never)")),
-                    h("div", { class: "form-row" }, h("label", { class: "form-label" }, "Theme:"), h("div", { class: "form-controls" }, theme)),
-                    h("div", { class: "form-row" }, h("label", { class: "form-label" }, ""), h("label", { class: "check" }, remember, "Remember my e-mail address on this device")),
-                ),
+                body: h("div", { class: "options-dialog" }, tabBar, tabBody),
                 buttons: [
+                    h("button", { type: "button", class: "options-reset", title: "Back to the default options (keeps columns and layout)", onclick: () => {
+                        for (const k of OPTION_KEYS) draft[k] = DEFAULTS[k];
+                        for (const update of controls) update();
+                        showSwatch();
+                        showDateExample();
+                    } }, "Defaults"),
+                    h("span", { class: "spacer" }),
                     h("button", { type: "button", class: "primary", onclick: () => {
-                        settings.clipboardSeconds = Math.max(0, parseInt(clip.value, 10) || 0);
-                        settings.lockMinutes = Math.max(0, parseInt(lock.value, 10) || 0);
-                        settings.theme = theme.value;
-                        settings.rememberEmail = remember.checked;
-                        if (!remember.checked) settings.email = "";
+                        for (const k of OPTION_KEYS) settings[k] = draft[k];
+                        if (!settings.rememberEmail) settings.email = "";
                         saveSettings();
                         close(true);
                     } }, "OK"),
@@ -364,6 +492,9 @@ export const SHORTCUTS = [
     ["Double-click URL", "Open it"],
     ["Drag entries onto a folder", "Move them"],
     ["Drag a folder onto a folder", "Move the folder with all sub folders"],
+    ["Drag a title bar", "Move a window or dialog"],
+    ["Double-click a title bar", "Maximize or restore a window"],
+    ["Esc (in a window)", "Close the window"],
 ];
 
 export function shortcutsDialog() {

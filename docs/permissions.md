@@ -68,3 +68,5 @@ Server administrators can change roles too: admin page → *Users* → click an 
 | `SSO_DIRECTORY_SYNC_CREATE_USERS` | `true` | Create accounts for new Keycloak users |
 | `SSO_DIRECTORY_SYNC_DISABLE_USERS` | `true` | Disable accounts of disabled or removed Keycloak users |
 | `ORG_GROUPS_ENABLED` | `false` | Groups inside organizations |
+
+The admin page itself has its own login, see [admin-page.md](admin-page.md).
