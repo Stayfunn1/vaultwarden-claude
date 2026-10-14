@@ -35,6 +35,9 @@ pub struct OIDCAuthenticatedUser {
     pub email: String,
     pub email_verified: Option<bool>,
     pub user_name: Option<String>,
+    /// Groups from `SSO_GROUPS_CLAIM`, `None` when the identity provider did not send the claim
+    #[serde(default)]
+    pub groups: Option<Vec<String>>,
 }
 
 impl_FromToSqlText!(OIDCAuthenticatedUser);

@@ -56,7 +56,8 @@ pub type CustomClient = openidconnect::Client<
     EndpointSet,
 >;
 
-pub type RefreshTokenResponse = (Option<String>, String, Option<Duration>);
+/// (refresh token, access token, expires in, id token)
+pub type RefreshTokenResponse = (Option<String>, String, Option<Duration>, Option<String>);
 
 #[derive(Clone)]
 pub struct Client {
@@ -286,6 +287,40 @@ impl Client {
         }
     }
 
+    /// The raw userinfo response, to read claims the typed client does not know (like groups)
+    pub async fn user_info_raw(&self, access_token: &str) -> ApiResult<serde_json::Value> {
+        let url = self.core_client.user_info_url();
+        let res = match self
+            .http_client
+            .client
+            .get(url.url().as_str())
+            .bearer_auth(access_token)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .send()
+            .await
+        {
+            Ok(res) => res,
+            Err(err) => err!(format!("Request to user_info endpoint failed: {err}")),
+        };
+        if !res.status().is_success() {
+            err!(format!("Request to user_info endpoint failed: HTTP {}", res.status()))
+        }
+        let body = match res.text().await {
+            Ok(body) => body,
+            Err(err) => err!(format!("Unable to read the user_info response: {err}")),
+        };
+        // Some providers answer with a signed JWT instead of JSON
+        let value = if body.trim_start().starts_with('{') {
+            serde_json::from_str(&body).ok()
+        } else {
+            crate::sso_groups::jwt_claims(body.trim())
+        };
+        let Some(value) = value else {
+            err!("Unable to parse the user_info response")
+        };
+        Ok(value)
+    }
+
     pub async fn check_validity(access_token: String) -> EmptyResult {
         let client = Client::cached().await?;
         match client.user_info(AccessToken::new(access_token)).await {
@@ -332,6 +367,7 @@ impl Client {
                 token_response.refresh_token().map(|token| token.secret().clone()),
                 token_response.access_token().secret().clone(),
                 token_response.expires_in(),
+                token_response.extra_fields().id_token().map(ToString::to_string),
             )),
         }
     }

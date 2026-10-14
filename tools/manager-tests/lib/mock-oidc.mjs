@@ -1,5 +1,8 @@
 // Minimal OpenID Connect provider for the SSO tests.
-// It logs in the user set with POST /_set_user without asking anything.
+// It logs in the user set with setUser() without asking anything. Optional user fields:
+//   groups:   sent as the `groups` claim
+//   groupsIn: where the groups are sent, "id_token" (default), "userinfo" or "none"
+// Refreshes use the current state of the user, so group changes apply on the next refresh.
 import http from "node:http";
 import crypto from "node:crypto";
 
@@ -21,6 +24,9 @@ export function startMockOidc(port) {
     const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
     const jwk = { ...publicKey.export({ format: "jwk" }), kid: "test", use: "sig", alg: "RS256" };
     let user = { sub: "user-1", email: "sso@example.com" };
+    const users = new Map([[user.sub, user]]);
+    const current = (sub) => users.get(sub);
+    const groupClaims = (u, where) => (u.groups && (u.groupsIn || "id_token") === where ? { groups: u.groups } : {});
     const codes = new Map();
     const tokens = new Map();
     const refreshTokens = new Map();
@@ -50,14 +56,10 @@ export function startMockOidc(port) {
             });
         }
         if (url.pathname === "/jwks") return json(res, 200, { keys: [jwk] });
-        if (url.pathname === "/_set_user" && req.method === "POST") {
-            user = JSON.parse(await readBody(req));
-            return json(res, 200, user);
-        }
         if (url.pathname === "/authorize") {
             const p = url.searchParams;
             const code = crypto.randomBytes(16).toString("hex");
-            codes.set(code, { nonce: p.get("nonce"), clientId: p.get("client_id"), challenge: p.get("code_challenge"), user: { ...user } });
+            codes.set(code, { nonce: p.get("nonce"), clientId: p.get("client_id"), challenge: p.get("code_challenge"), sub: user.sub });
             const redirect = new URL(p.get("redirect_uri"));
             redirect.searchParams.set("code", code);
             redirect.searchParams.set("state", p.get("state"));
@@ -66,12 +68,31 @@ export function startMockOidc(port) {
         }
         if (url.pathname === "/token" && req.method === "POST") {
             const form = new URLSearchParams(await readBody(req));
+            const now = Math.floor(Date.now() / 1000);
+            const idToken = (u, clientId, nonce) =>
+                sign({
+                    iss: issuer,
+                    sub: u.sub,
+                    aud: clientId || "vaultwarden",
+                    iat: now,
+                    exp: now + 300,
+                    ...(nonce ? { nonce } : {}),
+                    email: u.email,
+                    email_verified: true,
+                    ...groupClaims(u, "id_token"),
+                });
             if (form.get("grant_type") === "refresh_token") {
-                const u = refreshTokens.get(form.get("refresh_token"));
-                if (!u) return json(res, 400, { error: "invalid_grant" });
+                const r = refreshTokens.get(form.get("refresh_token"));
+                if (!r) return json(res, 400, { error: "invalid_grant" });
                 const access = crypto.randomBytes(16).toString("hex");
-                tokens.set(access, u);
-                return json(res, 200, { access_token: access, token_type: "Bearer", expires_in: 300, refresh_token: form.get("refresh_token") });
+                tokens.set(access, r.sub);
+                return json(res, 200, {
+                    access_token: access,
+                    token_type: "Bearer",
+                    expires_in: 300,
+                    id_token: idToken(current(r.sub), r.clientId),
+                    refresh_token: form.get("refresh_token"),
+                });
             }
             const entry = codes.get(form.get("code"));
             if (!entry) return json(res, 400, { error: "invalid_grant" });
@@ -80,27 +101,23 @@ export function startMockOidc(port) {
                 const expected = b64url(crypto.createHash("sha256").update(form.get("code_verifier") || "").digest());
                 if (expected !== entry.challenge) return json(res, 400, { error: "invalid_grant", error_description: "PKCE" });
             }
-            const now = Math.floor(Date.now() / 1000);
             const access = crypto.randomBytes(16).toString("hex");
-            tokens.set(access, entry.user);
+            tokens.set(access, entry.sub);
             const refresh = crypto.randomBytes(16).toString("hex");
-            refreshTokens.set(refresh, entry.user);
-            const idToken = sign({
-                iss: issuer,
-                sub: entry.user.sub,
-                aud: entry.clientId || "vaultwarden",
-                iat: now,
-                exp: now + 300,
-                nonce: entry.nonce,
-                email: entry.user.email,
-                email_verified: true,
+            refreshTokens.set(refresh, { sub: entry.sub, clientId: entry.clientId });
+            return json(res, 200, {
+                access_token: access,
+                token_type: "Bearer",
+                expires_in: 300,
+                id_token: idToken(current(entry.sub), entry.clientId, entry.nonce),
+                refresh_token: refresh,
             });
-            return json(res, 200, { access_token: access, token_type: "Bearer", expires_in: 300, id_token: idToken, refresh_token: refresh });
         }
         if (url.pathname === "/userinfo") {
-            const u = tokens.get((req.headers.authorization || "").replace(/^Bearer /, ""));
-            if (!u) return json(res, 401, { error: "invalid_token" });
-            return json(res, 200, { sub: u.sub, email: u.email, email_verified: true });
+            const sub = tokens.get((req.headers.authorization || "").replace(/^Bearer /, ""));
+            if (!sub) return json(res, 401, { error: "invalid_token" });
+            const u = current(sub);
+            return json(res, 200, { sub: u.sub, email: u.email, email_verified: true, ...groupClaims(u, "userinfo") });
         }
         json(res, 404, { error: "not found" });
     });
@@ -109,7 +126,10 @@ export function startMockOidc(port) {
         server.listen(port, "127.0.0.1", () =>
             resolve({
                 issuer,
-                setUser: (u) => (user = { ...u }),
+                setUser: (u) => {
+                    user = { ...u };
+                    users.set(user.sub, user);
+                },
                 stop: () => new Promise((r) => server.close(r)),
             }),
         );

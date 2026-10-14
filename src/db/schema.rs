@@ -276,6 +276,8 @@ table! {
     sso_users (user_uuid) {
         user_uuid -> Text,
         identifier -> Text,
+        idp_groups -> Nullable<Text>,
+        disabled_by_sync -> Bool,
     }
 }
 

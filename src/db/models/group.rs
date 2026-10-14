@@ -588,6 +588,20 @@ impl GroupUser {
         .await
     }
 
+    pub async fn delete(&self, conn: &DbConn) -> EmptyResult {
+        self.update_user_revision(conn).await;
+        let group_uuid = self.groups_uuid.clone();
+        let member_uuid = self.users_organizations_uuid.clone();
+        conn.run(move |conn| {
+            diesel::delete(groups_users::table)
+                .filter(groups_users::groups_uuid.eq(group_uuid))
+                .filter(groups_users::users_organizations_uuid.eq(member_uuid))
+                .execute(conn)
+                .map_res("Error deleting group user")
+        })
+        .await
+    }
+
     pub async fn delete_all_by_member(member_uuid: &MembershipId, conn: &DbConn) -> EmptyResult {
         match Membership::find_by_uuid(member_uuid, conn).await {
             Some(member) => User::update_uuid_revision(&member.user_uuid, conn).await,

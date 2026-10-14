@@ -60,6 +60,7 @@ mod mail;
 mod ratelimit;
 mod sso;
 mod sso_client;
+mod sso_groups;
 mod storage;
 mod util;
 

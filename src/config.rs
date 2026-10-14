@@ -822,6 +822,16 @@ make_config! {
         sso_only:                       bool,   true,   def,    false;
         /// Allow personal API key login when SSO only |> When disabled, the personal API key (used by the Bitwarden CLI) can not be used to log in while `SSO_ONLY` is active
         sso_only_allow_api_key:         bool,   true,   def,    true;
+        /// Groups claim |> Claim with the groups or roles of the user, in the ID token or the userinfo response. Nested claims are separated by `.`, e.g. `realm_access.roles`
+        sso_groups_claim:               String, true,   def,    "groups".to_owned();
+        /// Access groups |> Comma separated list. When set, only members of one of these identity provider groups can use Vaultwarden
+        sso_access_groups:              String, true,   def,    String::new();
+        /// Organization creation groups |> Comma separated list. When set, members of these groups can create organizations (in addition to the users in `ORG_CREATION_USERS`)
+        sso_org_creation_groups:        String, true,   def,    String::new();
+        /// Organization sync |> Manage organization memberships, roles and groups with identity provider groups named `<prefix>/<organization>[/owners|admins|managers|<group>]`
+        sso_org_sync:                   bool,   true,   def,    false;
+        /// Organization sync prefix |> The first part of the group names used by the organization sync
+        sso_org_sync_prefix:            String, true,   def,    "vaultwarden".to_owned();
         /// Allow SSO flow to create account |> You probably want to disable it when using a public provider
         sso_signups_allowed:            bool,   true,   def,    true;
         /// Allow email association |> Associate existing non-SSO user based on email
