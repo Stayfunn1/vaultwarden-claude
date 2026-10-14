@@ -216,8 +216,11 @@ export class Api {
                 });
                 const json = await Api.parseBody(res);
                 if (!res.ok) {
-                    this.setTokens(null);
-                    if (this.onUnauthorized) this.onUnauthorized();
+                    // Only a rejected refresh token ends the session, not a server that is restarting
+                    if (res.status === 400 || res.status === 401) {
+                        this.setTokens(null);
+                        if (this.onUnauthorized) this.onUnauthorized();
+                    }
                     throw new ApiError(errorMessage(json, res.status), res.status, json);
                 }
                 this.setTokens(json);

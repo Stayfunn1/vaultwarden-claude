@@ -357,6 +357,8 @@ export async function decryptFile(data, key) {
         return aesDecrypt(key, iv, ct);
     }
     if (type === EncType.AesCbc256_B64) {
+        // Without a MAC the data could have been modified, only allowed for keys without a MAC key
+        if (key.macKey) throw new CryptoError("Missing MAC on encrypted attachment");
         return aesDecrypt(key, data.subarray(1, 17), data.subarray(17));
     }
     throw new CryptoError(`Unsupported attachment encryption type ${type}`);

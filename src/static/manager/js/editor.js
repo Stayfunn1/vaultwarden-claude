@@ -67,6 +67,8 @@ export function editEntryDialog(app, original, { isNew = false, readOnly = false
     const hidePasswords = view.viewPassword === false;
     const pendingFiles = [];
     const deletedAttachments = new Set();
+    const originalAtStart = original;
+    let uploadedFiles = 0;
     let collectionIds = [...(view.collectionIds || [])];
 
     return dialog({
@@ -177,7 +179,14 @@ export function editEntryDialog(app, original, { isNew = false, readOnly = false
                 renderUris();
                 entry.appendChild(row("URL:", uriList));
 
-                const totpInput = h("input", { type: "text", class: "wide mono", value: l.totp || "", readonly: !canEdit || hidePasswords, placeholder: "Secret key or otpauth:// URI", spellcheck: "false" });
+                const totpInput = h("input", {
+                    type: "text",
+                    class: "wide mono",
+                    value: hidePasswords ? "" : l.totp || "",
+                    readonly: !canEdit || hidePasswords,
+                    placeholder: hidePasswords ? (l.totp ? "(hidden by the organization)" : "") : "Secret key or otpauth:// URI",
+                    spellcheck: "false",
+                });
                 const totpPreview = h("span", { class: "totp-preview" });
                 const refreshTotp = async () => {
                     try {
@@ -453,7 +462,8 @@ export function editEntryDialog(app, original, { isNew = false, readOnly = false
             // ----- History tab -------------------------------------------------------------
             const hist = h("div", { class: "form" });
             if (!view.passwordHistory.length) hist.appendChild(h("div", { class: "muted" }, "No password history."));
-            for (const ph of view.passwordHistory) {
+            if (hidePasswords && view.passwordHistory.length) hist.appendChild(h("div", { class: "muted" }, "The password history is hidden by your organization."));
+            for (const ph of hidePasswords ? [] : view.passwordHistory) {
                 const s = secretInput(ph.password, { readOnly: true });
                 hist.appendChild(row(formatDate(ph.lastUsedDate), s.input, s.eye, h("button", { type: "button", class: "icon-btn", title: "Copy", onclick: () => copyText(ph.password, "Old password") }, icon("copy"))));
             }
@@ -478,6 +488,23 @@ export function editEntryDialog(app, original, { isNew = false, readOnly = false
 
             // ----- Saving ------------------------------------------------------------------
             const saveBtn = h("button", { type: "button", class: "primary" }, "OK");
+            // Copies the stored state into the editor after the entry was saved, so pressing OK again
+            // (after a failed attachment upload) updates the entry instead of creating a second one
+            const syncFromVault = () => {
+                const stored = vault.ciphers.get(view.id);
+                if (!stored) return;
+                Object.assign(view, {
+                    raw: stored.raw,
+                    key: stored.key,
+                    hasCipherKey: stored.hasCipherKey,
+                    revisionDate: stored.revisionDate,
+                    creationDate: stored.creationDate,
+                    attachments: stored.attachments,
+                    passwordHistory: stored.passwordHistory,
+                });
+                if (view.login && stored.login) view.login.passwordRevisionDate = stored.login.passwordRevisionDate;
+                original = stored;
+            };
             const save = async () => {
                 errorBox.textContent = "";
                 if (!canEdit) {
@@ -502,7 +529,7 @@ export function editEntryDialog(app, original, { isNew = false, readOnly = false
                     title.focus();
                     return;
                 }
-                if (view.organizationId && isNew && !collectionIds.length) {
+                if (view.organizationId && !view.id && !collectionIds.length) {
                     showTab("entry");
                     errorBox.textContent = "Select at least one collection for an organization item.";
                     return;
@@ -512,34 +539,55 @@ export function editEntryDialog(app, original, { isNew = false, readOnly = false
                     errorBox.textContent = "Every custom field needs a name.";
                     return;
                 }
+                if (view.type === CipherType.SshKey && !(view.typeData?.privateKey && view.typeData?.publicKey && view.typeData?.keyFingerprint)) {
+                    // The server (and the Bitwarden apps) can not handle incomplete SSH keys
+                    showTab("entry");
+                    errorBox.textContent = "An SSH key needs the private key, the public key and the fingerprint.";
+                    return;
+                }
                 if (view.login) view.login.uris = view.login.uris.filter((u) => (u.uri || "").trim()).map((u) => ({ ...u, uri: u.uri.trim() }));
                 saveBtn.disabled = true;
                 saveBtn.textContent = "Saving…";
+                let stage = "entry";
                 try {
-                    let saved = await vault.saveCipher(view, { collectionIds });
-                    for (const id of deletedAttachments) await vault.deleteAttachment(saved.id, id);
-                    for (const file of pendingFiles) {
-                        await vault.addAttachment(saved.id, file.name, await readFile(file));
+                    const saved = await vault.saveCipher(view, { collectionIds });
+                    view.id = saved.id;
+                    syncFromVault();
+                    stage = "attachments";
+                    for (const id of [...deletedAttachments]) {
+                        await vault.deleteAttachment(view.id, id);
+                        deletedAttachments.delete(id);
+                        syncFromVault();
                     }
-                    saved = vault.ciphers.get(saved.id) || saved;
-                    close(saved);
+                    for (const file of [...pendingFiles]) {
+                        await vault.addAttachment(view.id, file.name, await readFile(file));
+                        pendingFiles.splice(pendingFiles.indexOf(file), 1);
+                        uploadedFiles++;
+                        syncFromVault();
+                    }
+                    close(vault.ciphers.get(view.id) || saved);
                 } catch (e) {
                     console.error(e);
-                    errorBox.textContent = e.message || String(e);
+                    const msg = e.message || String(e);
+                    errorBox.textContent = stage === "entry" ? msg : `The entry was saved, but an attachment could not be changed: ${msg}. Press OK to try again.`;
+                    renderAttachments();
                     saveBtn.disabled = false;
                     saveBtn.textContent = "OK";
                 }
             };
             saveBtn.addEventListener("click", save);
             const cancel = async () => {
-                if (canEdit && JSON.stringify(stripForCompare(view)) !== JSON.stringify(stripForCompare(original)) || pendingFiles.length || deletedAttachments.size) {
+                const changed = canEdit && JSON.stringify(stripForCompare(view)) !== JSON.stringify(stripForCompare(original));
+                if (changed || pendingFiles.length || deletedAttachments.size) {
                     if (!(await confirmDialog("Discard changes", "Discard the changes to this entry?", { ok: "Discard", danger: true }))) return;
                 }
-                close(undefined);
+                // An entry saved before a failed attachment upload is still reported as saved
+                close(view.id && original !== originalAtStart ? vault.ciphers.get(view.id) : undefined);
             };
             return {
                 body: h("div", null, tabBar, tabBody, errorBox),
                 buttons: [saveBtn, h("button", { type: "button", onclick: cancel }, canEdit ? "Cancel" : "Close")],
+                onCancel: cancel,
                 onEnter: () => {
                     if (document.activeElement?.tagName !== "TEXTAREA") save();
                 },
@@ -547,7 +595,7 @@ export function editEntryDialog(app, original, { isNew = false, readOnly = false
             };
         },
     }).then((result) => {
-        if (result && pendingFiles.length) toast(`${pendingFiles.length} attachment(s) uploaded`, "ok");
+        if (result && uploadedFiles) toast(`${uploadedFiles} attachment(s) uploaded`, "ok");
         return result;
     });
 }

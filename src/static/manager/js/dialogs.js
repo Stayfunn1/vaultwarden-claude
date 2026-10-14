@@ -206,7 +206,7 @@ export async function importKeePassDialog(app) {
 
     const signal = { cancelled: false };
     const progress = progressDialog("Importing…", { cancellable: true, onCancel: () => (signal.cancelled = true) });
-    app.busy = true;
+    app.beginBusy();
     try {
         const res = await importEntries(vault, converted, { ...result, signal }, (p) => progress.update(p.phase, p.done, p.total));
         progress.close();
@@ -223,7 +223,7 @@ export async function importKeePassDialog(app) {
         await alertDialog("Import failed", e.message || String(e));
         await vault.sync().catch(() => {});
     } finally {
-        app.busy = false;
+        app.endBusy();
         app.refresh();
     }
 }
@@ -252,7 +252,7 @@ export function shareDialog(vault, count, preselectOrg, preselectCollections = [
             for (const org of vault.organizations.values()) {
                 if (vault.orgKeys.has(org.id)) orgSel.appendChild(h("option", { value: org.id, selected: org.id === preselectOrg }, org.name));
             }
-            const holder = h("div");
+            const holder = h("div", { style: { flex: "1", display: "flex" } });
             let list;
             const render = () => {
                 list = collectionChecklist(vault, orgSel.value, orgSel.value === preselectOrg ? preselectCollections : []);
@@ -283,16 +283,21 @@ export function shareDialog(vault, count, preselectOrg, preselectCollections = [
     });
 }
 
-export function collectionsDialog(vault, orgId, selected) {
+export function collectionsDialog(vault, orgId, selected, count = 1) {
     return dialog({
         title: "Collections",
         width: "480px",
         build: (close) => {
             const list = collectionChecklist(vault, orgId, selected, { onlyWritable: false });
+            const err = h("div", { class: "form-error" });
+            const text = count > 1 ? `Collections of the ${count} selected items (only the ones they all share are ticked; changes are applied to all of them):` : "Select the collections the item should be in:";
             return {
-                body: h("div", { class: "form" }, h("p", null, "Select the collections the item(s) should be in:"), list.box),
+                body: h("div", { class: "form" }, h("p", null, text), list.box, err),
                 buttons: [
-                    h("button", { type: "button", class: "primary", onclick: () => close([...list.chosen]) }, "Save"),
+                    h("button", { type: "button", class: "primary", onclick: () => {
+                        if (!list.chosen.size) return (err.textContent = "Select at least one collection.");
+                        close([...list.chosen]);
+                    } }, "Save"),
                     h("button", { type: "button", onclick: () => close(undefined) }, "Cancel"),
                 ],
             };

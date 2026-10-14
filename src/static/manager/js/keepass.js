@@ -173,21 +173,26 @@ export function extractTotp(fields, title) {
     // KeePassXC (2.6+) and KeeTrayTOTP style otpauth URI
     const otp = get("otp");
     if (otp) {
-        if (/^otpauth:\/\//i.test(otp)) return { totp: otp, consumed: ["otp"] };
-        // "key=SECRET&step=30&size=6" (KeeOtp)
+        if (/^otpauth:\/\/totp/i.test(otp)) return { totp: otp, consumed: ["otp"] };
+        // "key=SECRET&step=30&size=6&otpHashMode=Sha256" (KeeOtp)
         if (/key=/.test(otp)) {
             const p = new URLSearchParams(otp);
+            // Counter based (HOTP) codes are not supported by Bitwarden, keep those as a protected field
+            if ((p.get("type") || "totp").toLowerCase() !== "totp") return null;
             const secret = (p.get("key") || "").replace(/\s/g, "");
             const period = p.get("step");
             const digits = p.get("size");
-            if (secret && (period || digits) && (period !== "30" || digits !== "6")) {
+            const alg = (p.get("otpHashMode") || "").toUpperCase().replace("-", "");
+            if (secret && ((period && period !== "30") || (digits && digits !== "6") || (alg && alg !== "SHA1"))) {
                 const q = new URLSearchParams({ secret });
                 if (period) q.set("period", period);
                 if (digits) q.set("digits", digits);
+                if (alg) q.set("algorithm", alg);
                 return { totp: `otpauth://totp/${encodeURIComponent(title || "KeePass")}?${q}`, consumed: ["otp"] };
             }
             if (secret) return { totp: secret, consumed: ["otp"] };
         }
+        if (/^otpauth:\/\/hotp/i.test(otp)) return null;
         return { totp: otp.replace(/\s/g, ""), consumed: ["otp"] };
     }
     // KeePass 2.47+ native TOTP

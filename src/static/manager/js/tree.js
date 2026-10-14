@@ -2,7 +2,7 @@
 // Bitwarden stores folders and collections flat, nesting is done by "/" in the name.
 // The tree shows that nesting, including parents which only exist implicitly.
 
-import { h, icon, clear, settings, saveSettings } from "./ui.js";
+import { h, icon, clear } from "./ui.js";
 import { FOLDER_DELIMITER, isSameOrDescendant } from "./vault.js";
 
 export function folderKey(path) {
@@ -133,7 +133,10 @@ const KIND_ICON = { vault: "vault", folder: "folder", favorites: "star", archive
 export class TreeView {
     constructor(container, handlers) {
         this.el = container;
-        this.h = handlers; // { onSelect(node), onContext(node, x, y), onDrop(node, dataTransfer), onDragStartNode(node, e), onRename(node) }
+        // { onSelect(node), onContext(node, x, y), onDrop(node, dataTransfer), onDragStartNode(node, e), onRename(node), ... }
+        this.h = handlers;
+        // Expanded nodes by key. The keys contain folder names, so the owner persists them encrypted (onExpandedChanged)
+        this.expanded = {};
         this.model = null;
         this.selectedKey = "vault";
         this.rows = new Map();
@@ -143,13 +146,13 @@ export class TreeView {
     }
 
     isExpanded(node) {
-        const v = settings.expanded[node.key];
+        const v = this.expanded[node.key];
         return v === undefined ? node.kind === "vault" || node.kind === "org" : v;
     }
 
     setExpanded(node, expanded) {
-        settings.expanded[node.key] = expanded;
-        saveSettings();
+        this.expanded[node.key] = expanded;
+        this.h.onExpandedChanged?.(this.expanded);
     }
 
     render(vault) {
@@ -285,9 +288,9 @@ export class TreeView {
 
     expandAll(expand) {
         for (const n of this.model.nodes.values()) {
-            if (n.children && n.children.length) settings.expanded[n.key] = expand;
+            if (n.children && n.children.length) this.expanded[n.key] = expand;
         }
-        saveSettings();
+        this.h.onExpandedChanged?.(this.expanded);
         this.render(this.vault);
     }
 
@@ -298,12 +301,12 @@ export class TreeView {
         let changed = false;
         for (let p = node.parent; p; p = p.parent) {
             if (!this.isExpanded(p)) {
-                settings.expanded[p.key] = true;
+                this.expanded[p.key] = true;
                 changed = true;
             }
         }
         if (changed) {
-            saveSettings();
+            this.h.onExpandedChanged?.(this.expanded);
             this.render(this.vault);
         }
     }

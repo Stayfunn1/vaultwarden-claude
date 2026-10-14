@@ -3,7 +3,7 @@
 
 import { Api, ApiError, TwoFactorRequired, TwoFactorType, decodeJwt } from "./api.js";
 import { Vault, CipherType, CipherTypeNames, FieldType, cloneView, newCipherView, normalizeFolderPath, parentPath, leafName, isSameOrDescendant, sanitizeSegment } from "./vault.js";
-import { deriveMasterKey, hashMasterKey, pkcePair, randomBytes, b64urlEncode, b64urlDecode, b64encode, totpCode, pbkdf2, utf8 } from "./bwcrypto.js";
+import { deriveMasterKey, hashMasterKey, pkcePair, randomBytes, b64urlEncode, b64urlDecode, b64encode, totpCode, pbkdf2, utf8, encryptString, decryptString } from "./bwcrypto.js";
 import {
     h, icon, clear, settings, saveSettings, toast, copyText, clipboardState, showMenu, closeMenus, dialog, confirmDialog, promptDialog,
     alertDialog, progressDialog, isDialogOpen, closeAllDialogs, formatDate, formatBytes, downloadBlob, safeUrl,
@@ -14,6 +14,8 @@ import { editEntryDialog } from "./editor.js";
 import { generatorDialog, importKeePassDialog, shareDialog, collectionsDialog, settingsDialog, shortcutsDialog } from "./dialogs.js";
 
 const SESSION_KEY = "vwm.session";
+// Card, identity and SSH key values which are treated like passwords
+const SENSITIVE_TYPE_FIELDS = ["number", "code", "ssn", "passportNumber", "licenseNumber", "privateKey"];
 const SSO_REQUEST_KEY = "vwm.sso.request";
 const SSO_RESULT_KEY = "vwm.sso.result";
 
@@ -38,7 +40,7 @@ class App {
         this.vault = new Vault(this.api);
         this.session = null; // { email, kdf, key, tokens, sso }
         this.searchText = "";
-        this.busy = false;
+        this._busy = 0;
         this.repromptPassed = new Set();
         this.lastActivity = Date.now();
         this.lastRevision = null;
@@ -54,6 +56,19 @@ class App {
                 this.logout(false);
             }
         };
+    }
+
+    // Long running work (sync, bulk operations, imports): no auto-lock and no background sync meanwhile
+    get busy() {
+        return this._busy > 0 || this.vault.busy;
+    }
+
+    beginBusy() {
+        this._busy++;
+    }
+
+    endBusy() {
+        this._busy = Math.max(0, this._busy - 1);
     }
 
     // ----- Startup & session ---------------------------------------------------------------
@@ -441,8 +456,9 @@ class App {
         try {
             const rev = await this.api.get("/api/accounts/revision-date");
             if (this.lastRevision !== null && rev !== this.lastRevision) {
-                await this.sync(true);
-                toast("Vault updated from another device", "info");
+                // Discarded (and retried later) when something was changed here in the meantime
+                if (await this.sync(true)) toast("Vault updated from another device", "info");
+                return;
             }
             this.lastRevision = rev;
         } catch {
@@ -464,7 +480,35 @@ class App {
             this.lastRevision = null;
         }
         this.buildMain();
+        await this.loadTreeState();
         this.refresh();
+    }
+
+    // The expanded folders are remembered per account. Their keys contain folder names, so they are
+    // stored encrypted with the account key, like everything else of the vault.
+    treeStateKey() {
+        return `vwm.tree.${this.vault.userId}`;
+    }
+
+    async loadTreeState() {
+        try {
+            const enc = localStorage.getItem(this.treeStateKey());
+            if (enc) this.tree.expanded = JSON.parse(await decryptString(enc, this.vault.userKey)) || {};
+        } catch {
+            this.tree.expanded = {};
+        }
+    }
+
+    saveTreeState(expanded) {
+        clearTimeout(this._treeSaveTimer);
+        this._treeSaveTimer = setTimeout(async () => {
+            if (!this.vault.userKey) return;
+            try {
+                localStorage.setItem(this.treeStateKey(), await encryptString(JSON.stringify(expanded), this.vault.userKey));
+            } catch {
+                /* storage unavailable */
+            }
+        }, 500);
     }
 
     buildMain() {
@@ -503,6 +547,7 @@ class App {
             canDrop: (node, dt) => this.canDrop(node, dt),
             onDrop: (node, dt) => this.handleDrop(node, dt),
             onDragStartNode: (node) => (this._dragNode = node),
+            onExpandedChanged: (expanded) => this.saveTreeState(expanded),
             onRename: (node) => this.renameGroup(node),
             onDelete: (node) => this.deleteGroup(node),
             onAddChild: (node) => this.addGroup(node),
@@ -699,7 +744,6 @@ class App {
             { label: "Secure note", icon: "note", action: () => this.addEntry(CipherType.SecureNote) },
             { label: "Card", icon: "card", action: () => this.addEntry(CipherType.Card) },
             { label: "Identity", icon: "identity", action: () => this.addEntry(CipherType.Identity) },
-            { label: "SSH key", icon: "ssh", action: () => this.addEntry(CipherType.SshKey) },
         ];
     }
 
@@ -984,6 +1028,17 @@ class App {
                 else add("Password", "(hidden by your organization)", { noCopy: true });
             }
             for (const u of v.login.uris) add("URL", u.uri, { link: true });
+        }
+        // Items with the master password re-prompt only show the basics until the password was confirmed
+        if (v.reprompt === 1 && !this.repromptPassed.has(v.id)) {
+            const show = h("button", { type: "button", onclick: async () => {
+                if (await this.reprompt(v)) this.renderDetails([v]);
+            } }, "Show all details…");
+            grid.append(h("span", { class: "dl" }, ""), h("span", { class: "dvw" }, show));
+            el.appendChild(grid);
+            return;
+        }
+        if (v.login) {
             if (v.login.totp && v.viewPassword) {
                 const totpEl = h("span", { class: "dv mono totp" }, "…");
                 grid.append(h("span", { class: "dl" }, "TOTP"), h("span", { class: "dvw" }, totpEl, this.copyButton(() => this.copyField("totp"))));
@@ -995,8 +1050,10 @@ class App {
         if (v.typeData && v.type !== CipherType.SecureNote) {
             for (const [k, val] of Object.entries(v.typeData)) {
                 if (typeof val !== "string" || !val) continue;
-                const sensitive = ["number", "code", "ssn", "passportNumber", "licenseNumber", "privateKey"].includes(k);
-                add(k.replace(/([A-Z])/g, " $1").replace(/^./, (c) => c.toUpperCase()), val, { secret: sensitive && v.viewPassword, mono: sensitive });
+                const sensitive = SENSITIVE_TYPE_FIELDS.includes(k);
+                const label = k.replace(/([A-Z])/g, " $1").replace(/^./, (c) => c.toUpperCase());
+                if (sensitive && !v.viewPassword) add(label, "(hidden by your organization)", { noCopy: true });
+                else add(label, val, { secret: sensitive, mono: sensitive });
             }
         }
         for (const f of v.fields) {
@@ -1096,7 +1153,8 @@ class App {
     }
 
     copyTypeField(v, key) {
-        const sensitive = ["number", "code", "ssn", "passportNumber", "licenseNumber", "privateKey"].includes(key);
+        const sensitive = SENSITIVE_TYPE_FIELDS.includes(key);
+        if (sensitive && !v.viewPassword) return toast("Your organization hides this field", "warn");
         if (sensitive) return this.copySecret(v, v.typeData[key], key);
         copyText(v.typeData[key], key);
     }
@@ -1279,17 +1337,30 @@ class App {
         if (personal.some((v) => v.decryptError)) return alertDialog("Move to organization", "Some items can not be fully decrypted and can not be moved.");
         const choice = await shareDialog(this.vault, personal.length, orgId, collectionIds);
         if (!choice) return;
-        await this.withProgress("Moving to organization", (p) => this.vault.shareCiphers(personal.map((v) => v.id), choice.organizationId, choice.collectionIds, p));
-        toast(`${personal.length} entr${personal.length === 1 ? "y" : "ies"} moved to the organization`, "ok");
+        const ok = await this.withProgress("Moving to organization", async (p) => {
+            await this.vault.shareCiphers(personal.map((v) => v.id), choice.organizationId, choice.collectionIds, p);
+            return true;
+        });
+        if (ok) toast(`${personal.length} entr${personal.length === 1 ? "y" : "ies"} moved to the organization`, "ok");
     }
 
     async editCollections(list = this.selected) {
         const orgIds = new Set(list.map((v) => v.organizationId));
         if (orgIds.size !== 1 || !list[0].organizationId) return;
-        const current = list.length === 1 ? list[0].collectionIds : [];
-        const ids = await collectionsDialog(this.vault, list[0].organizationId, current);
-        if (!ids) return;
-        await this.withProgress("Updating collections", () => this.vault.setCipherCollections(list.map((v) => v.id), ids));
+        // The dialog shows the collections all selected items are in. Unticking one removes it from
+        // all of them, ticking one adds it to all of them, everything else stays as it is.
+        const common = list[0].collectionIds.filter((id) => list.every((v) => v.collectionIds.includes(id)));
+        const chosen = await collectionsDialog(this.vault, list[0].organizationId, common, list.length);
+        if (!chosen) return;
+        const removed = common.filter((id) => !chosen.includes(id));
+        const updates = list.map((v) => ({ id: v.id, ids: [...new Set([...v.collectionIds.filter((id) => !removed.includes(id)), ...chosen])] }));
+        if (updates.some((u) => !u.ids.length)) {
+            return alertDialog("Collections", "Every organization item needs at least one collection, otherwise only the organization admins can still see it.");
+        }
+        await this.withProgress("Updating collections", async () => {
+            for (const u of updates) await this.vault.setCipherCollections([u.id], u.ids);
+            return true;
+        });
     }
 
     async downloadAttachment(cipherId, attachmentId) {
@@ -1377,16 +1448,26 @@ class App {
 
     async moveGroup(node, newPath) {
         if (newPath === node.path) return;
-        try {
-            if (node.kind === "folder") {
-                await this.withProgress("Moving folder", (p) => this.vault.moveFolderPath(node.path, newPath, p));
-                this.tree.select(folderKey(newPath), false);
-            } else if (node.kind === "collection") {
-                await this.withProgress("Renaming collections", () => this.moveCollection(node, newPath));
-                this.tree.select(collectionKey(node.orgId, newPath), false);
+        if (node.kind === "folder") {
+            // Folders which already exist at the new location are merged, ask first
+            const moving = [...this.vault.folders.values()].filter((f) => isSameOrDescendant(f.path, node.path));
+            const others = new Set([...this.vault.folders.values()].filter((f) => !moving.includes(f)).map((f) => f.path));
+            const clashes = [...new Set(moving.map((f) => newPath + f.path.substring(node.path.length)).filter((p) => others.has(p)))];
+            if (clashes.length) {
+                const msg = h("div", null, h("p", null, `These folders already exist, their contents will be merged:`), h("ul", { class: "error-list" }, clashes.slice(0, 50).map((p) => h("li", null, p))));
+                if (!(await confirmDialog("Merge folders", msg, { ok: "Merge" }))) return;
             }
-        } catch (e) {
-            alertDialog("Move failed", e.message);
+            const ok = await this.withProgress("Moving folder", async (p) => {
+                await this.vault.moveFolderPath(node.path, newPath, p);
+                return true;
+            });
+            if (ok) this.tree.select(folderKey(newPath), false);
+        } else if (node.kind === "collection") {
+            const ok = await this.withProgress("Renaming collections", async () => {
+                await this.moveCollection(node, newPath);
+                return true;
+            });
+            if (ok) this.tree.select(collectionKey(node.orgId, newPath), false);
         }
         this.refresh();
     }
@@ -1444,6 +1525,7 @@ class App {
         try {
             if (what === "merge") {
                 const n = await this.withProgress("Merging folders", (p) => this.vault.mergeDuplicateFolders(p));
+                if (n === undefined) return;
                 toast(n ? `${n} duplicate folder(s) merged` : "No duplicate folders found", "ok");
             } else if (what === "empty") {
                 const empty = this.vault.emptyFolders();
@@ -1451,9 +1533,11 @@ class App {
                 const list = h("ul", { class: "error-list" }, empty.slice(0, 100).map((f) => h("li", null, f.path)));
                 if (!(await confirmDialog("Delete empty folders", h("div", null, h("p", null, `Delete ${empty.length} empty folder(s)?`), list), { ok: "Delete", danger: true }))) return;
                 const n = await this.withProgress("Deleting empty folders", (p) => this.vault.deleteEmptyFolders(p));
+                if (n === undefined) return;
                 toast(`${n} empty folder(s) deleted`, "ok");
             } else if (what === "repair") {
                 const n = await this.withProgress("Creating parent folders", () => this.vault.repairFolderTree());
+                if (n === undefined) return;
                 toast(n ? `${n} parent folder(s) created` : "All parent folders exist", "ok");
             }
         } catch (e) {
@@ -1514,35 +1598,49 @@ class App {
 
     // ----- Sync & progress -------------------------------------------------------------------------------
 
+    // A silent sync is a background refresh: it is skipped while anything else runs and its result
+    // is dropped when the vault was changed here in the meantime. Returns true when the data was loaded.
     async sync(silent = false) {
-        if (this.busy) return;
+        if (silent ? this.busy : this._syncing) return false;
+        this._syncing = true;
         const selection = [...(this.table?.selection || [])];
         const prog = silent ? null : progressDialog("Synchronizing");
-        this.busy = true;
+        const revision = this.api.get("/api/accounts/revision-date").catch(() => null);
+        this.beginBusy();
+        let applied = false;
         try {
-            await this.vault.sync((d, t) => prog?.update("Decrypting", d, t));
-            this.lastRevision = await this.api.get("/api/accounts/revision-date").catch(() => null);
+            applied = await this.vault.sync((d, t) => prog?.update("Decrypting", d, t), { background: silent });
+            if (applied) this.lastRevision = await revision;
             if (!silent) toast("Vault synchronized", "ok", 1500);
         } catch (e) {
             if (!silent) alertDialog("Synchronization failed", e.message);
         } finally {
-            this.busy = false;
+            this._syncing = false;
+            this.endBusy();
             prog?.close();
         }
-        this.refresh();
-        if (selection.length) this.table.selectIds(selection.filter((id) => this.vault.ciphers.has(id)));
+        if (applied) {
+            this.refresh();
+            if (selection.length) this.table.selectIds(selection.filter((id) => this.vault.ciphers.has(id)));
+        }
+        return applied;
     }
 
+    // Runs a vault operation with a progress dialog. Errors are shown to the user, the vault is
+    // synchronized again and undefined is returned, so callers should return a value on success.
     async withProgress(title, fn) {
         const prog = progressDialog(title);
-        this.busy = true;
+        this.beginBusy();
         try {
             return await fn((done, total) => prog.update(title, done, total));
         } catch (e) {
+            console.error(e);
             await this.vault.sync().catch(() => {});
-            throw e;
+            prog.close();
+            await alertDialog(`${title} failed`, e.message || String(e));
+            return undefined;
         } finally {
-            this.busy = false;
+            this.endBusy();
             prog.close();
             this.refresh();
         }

@@ -109,10 +109,17 @@ export async function mapLimit(items, limit, fn, onProgress) {
     const results = new Array(items.length);
     let next = 0;
     let done = 0;
+    let failed = false;
     async function worker() {
-        while (next < items.length) {
+        // After the first failure no new work is started, the error is reported by Promise.all
+        while (next < items.length && !failed) {
             const i = next++;
-            results[i] = await fn(items[i], i);
+            try {
+                results[i] = await fn(items[i], i);
+            } catch (e) {
+                failed = true;
+                throw e;
+            }
             done++;
             if (onProgress) onProgress(done, items.length);
         }
@@ -156,9 +163,14 @@ export function sanitizeSegment(name) {
         .trim();
 }
 
+// Decrypts a value which must be encrypted (or empty).
+// Plain text where an encrypted value is expected is an error: it can only come from a tampered server.
 async function decryptMaybe(value, key, errors) {
     if (value === null || value === undefined || value === "") return value ?? null;
-    if (!isEncString(value)) return value;
+    if (!isEncString(value)) {
+        errors.push(new CryptoError("Unencrypted value where an encrypted one was expected"));
+        return null;
+    }
     try {
         return await decryptString(value, key);
     } catch (e) {
@@ -167,14 +179,15 @@ async function decryptMaybe(value, key, errors) {
     }
 }
 
-// Decrypt all EncString properties of a (type specific) object and remember which ones were encrypted
-async function decryptObject(obj, key, errors) {
+// Decrypt all EncString properties of a (type specific) object and remember which ones were encrypted.
+// `expected` lists properties which must be encrypted when they are set.
+async function decryptObject(obj, key, errors, expected = []) {
     if (!obj || typeof obj !== "object") return { plain: obj ?? null, encryptedKeys: [] };
     const plain = {};
     const encryptedKeys = [];
     for (const [k, v] of Object.entries(obj)) {
         if (k === "response" || k === "object") continue;
-        if (isEncString(v)) {
+        if (isEncString(v) || (expected.includes(k) && typeof v === "string" && v !== "")) {
             encryptedKeys.push(k);
             plain[k] = await decryptMaybe(v, key, errors);
         } else {
@@ -217,6 +230,23 @@ export class Vault {
         this.policies = [];
         this.lastSync = null;
         this.onChange = null;
+        // Running vault operations, a background sync must not mix its (older) data with their changes
+        this._ops = 0;
+        this._opGen = 0;
+    }
+
+    get busy() {
+        return this._ops > 0;
+    }
+
+    async _op(fn) {
+        this._ops++;
+        this._opGen++;
+        try {
+            return await fn();
+        } finally {
+            this._ops--;
+        }
     }
 
     get userId() {
@@ -266,31 +296,34 @@ export class Vault {
 
     // ----- Sync & decryption --------------------------------------------------------------
 
-    async sync(onProgress) {
+    // Loads and decrypts the whole vault. Returns false when the result was discarded:
+    // a background sync is dropped when a vault operation ran in the meantime, and nothing is
+    // loaded into a vault that got locked while decrypting.
+    async sync(onProgress, { background = false } = {}) {
+        const gen = this._opGen;
         const data = await this.api.sync();
-        await this.loadSync(data, onProgress);
-        return data;
+        return this.loadSync(data, onProgress, () => background && (this._ops > 0 || this._opGen !== gen));
     }
 
-    async loadSync(data, onProgress) {
-        if (!this.userKey) throw new CryptoError("Vault is locked");
+    async loadSync(data, onProgress, discard = () => false) {
+        const userKey = this.userKey;
+        if (!userKey) throw new CryptoError("Vault is locked");
         const profile = data.profile;
-        this.profile = { id: profile.id, email: profile.email, name: profile.name, key: profile.key };
-        this.policies = data.policies || [];
 
-        // Private key and organization keys
-        this.privateKey = null;
+        // Everything is decrypted into new maps first and swapped in at the end, so the vault
+        // is never seen half loaded by other code running in the meantime
+        let privateKey = null;
         if (profile.privateKey) {
             try {
-                this.privateKey = new RsaPrivateKey(await decryptBytes(profile.privateKey, this.userKey));
+                privateKey = new RsaPrivateKey(await decryptBytes(profile.privateKey, userKey));
             } catch (e) {
                 console.error("Unable to decrypt the private key", e);
             }
         }
-        this.orgKeys.clear();
-        this.organizations.clear();
+        const orgKeys = new Map();
+        const organizations = new Map();
         for (const org of profile.organizations || []) {
-            this.organizations.set(org.id, {
+            organizations.set(org.id, {
                 id: org.id,
                 name: org.name,
                 type: org.type,
@@ -300,40 +333,37 @@ export class Vault {
                 usersGetPremium: org.usersGetPremium,
                 useGroups: org.useGroups,
             });
-            if (org.key && this.privateKey) {
+            if (org.key && privateKey) {
                 try {
-                    this.orgKeys.set(org.id, new SymmetricKey(await decryptBytes(org.key, this.privateKey)));
+                    orgKeys.set(org.id, new SymmetricKey(await decryptBytes(org.key, privateKey)));
                 } catch (e) {
                     console.error(`Unable to decrypt the key of organization ${org.id}`, e);
                 }
             }
         }
+        const folders = new Map();
+        for (const f of data.folders || []) await this._addFolder(f, folders, userKey);
+        const collections = new Map();
+        for (const c of data.collections || []) await this._addCollection(c, collections, orgKeys);
+        const views = await mapLimit(data.ciphers || [], 16, (raw) => this.decryptCipher(raw, { userKey, orgKeys }), onProgress);
 
-        // Folders
-        this.folders.clear();
-        for (const f of data.folders || []) {
-            await this._addFolder(f);
-        }
-
-        // Collections
-        this.collections.clear();
-        for (const c of data.collections || []) {
-            await this._addCollection(c);
-        }
-
-        // Ciphers
-        this.ciphers.clear();
-        const raws = data.ciphers || [];
-        const views = await mapLimit(raws, 16, (raw) => this.decryptCipher(raw), onProgress);
-        for (const v of views) this.ciphers.set(v.id, v);
-
+        if (this.userKey !== userKey || discard()) return false;
+        this.profile = { id: profile.id, email: profile.email, name: profile.name, key: profile.key };
+        this.policies = data.policies || [];
+        this.privateKey = privateKey;
+        this.orgKeys = orgKeys;
+        this.organizations = organizations;
+        this.folders = folders;
+        this.collections = collections;
+        this.ciphers = new Map(views.map((v) => [v.id, v]));
         this.lastSync = Date.now();
         this.changed("all");
+        return true;
     }
 
-    async _addFolder(raw) {
+    async _addFolder(raw, map = this.folders, userKey = this.userKey) {
         const errors = [];
-        const name = await decryptMaybe(raw.name, this.userKey, errors);
+        const name = await decryptMaybe(raw.name, userKey, errors);
         const folder = {
             id: raw.id,
             name: name ?? "[error: cannot decrypt]",
@@ -341,12 +371,12 @@ export class Vault {
             revisionDate: raw.revisionDate,
             error: errors.length > 0,
         };
-        this.folders.set(folder.id, folder);
+        map.set(folder.id, folder);
         return folder;
     }
 
-    async _addCollection(raw) {
-        const key = this.orgKeys.get(raw.organizationId);
+    async _addCollection(raw, map = this.collections, orgKeys = this.orgKeys) {
+        const key = orgKeys.get(raw.organizationId);
         const errors = [];
         const name = key ? await decryptMaybe(raw.name, key, errors) : null;
         const col = {
@@ -359,20 +389,20 @@ export class Vault {
             manage: !!raw.manage,
             externalId: raw.externalId,
         };
-        this.collections.set(col.id, col);
+        map.set(col.id, col);
         return col;
     }
 
-    baseKeyFor(organizationId) {
+    baseKeyFor(organizationId, keys = { userKey: this.userKey, orgKeys: this.orgKeys }) {
         if (organizationId) {
-            const k = this.orgKeys.get(organizationId);
+            const k = keys.orgKeys.get(organizationId);
             if (!k) throw new CryptoError("Missing organization key");
             return k;
         }
-        return this.userKey;
+        return keys.userKey;
     }
 
-    async decryptCipher(raw) {
+    async decryptCipher(raw, keys) {
         const errors = [];
         const view = {
             id: raw.id,
@@ -403,7 +433,7 @@ export class Vault {
         };
         let key;
         try {
-            const baseKey = this.baseKeyFor(view.organizationId);
+            const baseKey = this.baseKeyFor(view.organizationId, keys);
             key = raw.key ? new SymmetricKey(await decryptBytes(raw.key, baseKey)) : baseKey;
         } catch (e) {
             view.decryptError = true;
@@ -414,8 +444,8 @@ export class Vault {
         view.name = await decryptMaybe(raw.name, key, errors);
         view.notes = await decryptMaybe(raw.notes, key, errors);
 
-        if (raw.type === CipherType.Login && raw.login) {
-            const l = raw.login;
+        if (raw.type === CipherType.Login) {
+            const l = raw.login || {};
             view.login = {
                 username: await decryptMaybe(l.username, key, errors),
                 password: await decryptMaybe(l.password, key, errors),
@@ -427,19 +457,25 @@ export class Vault {
             };
             for (const u of l.uris || []) {
                 const uri = await decryptMaybe(u.uri, key, errors);
-                // Like the official clients, drop URIs whose checksum does not match (tampered data)
-                if (raw.key && u.uriChecksum) {
-                    const sum = await decryptMaybe(u.uriChecksum, key, errors);
-                    if (sum !== (await uriChecksum(uri ?? ""))) continue;
+                if (uri === null) continue;
+                // Like the official clients: for items with a cipher key, URIs without a valid checksum
+                // were changed by the server and are dropped (they would be used for auto-fill)
+                if (raw.key) {
+                    const sum = u.uriChecksum ? await decryptMaybe(u.uriChecksum, key, errors) : null;
+                    if (sum !== (await uriChecksum(uri))) continue;
                 }
                 view.login.uris.push({ uri, match: u.match ?? null });
             }
         } else {
             const typeKey = TypeDataKey[raw.type];
             if (typeKey && raw[typeKey]) {
-                const { plain, encryptedKeys } = await decryptObject(raw[typeKey], key, errors);
+                const expected = (TypeFields[raw.type] || []).map((f) => f[0]);
+                const { plain, encryptedKeys } = await decryptObject(raw[typeKey], key, errors, expected);
                 view.typeData = plain;
                 view.typeEncryptedKeys = encryptedKeys;
+            } else if (raw.type === CipherType.SshKey) {
+                // The server hides SSH keys with missing parts, saving such an item would erase the key
+                errors.push(new CryptoError("The SSH key data of this item is incomplete"));
             }
         }
 
@@ -589,15 +625,19 @@ export class Vault {
     }
 
     // Applies the password history rules of the Bitwarden clients
+    // The history is never edited by the user, so it is always taken from the stored item: a view that
+    // was saved before (e.g. a retry after a failed attachment upload) can not drop newer entries.
     static updateHistory(view, original) {
         if (!original) return view;
         const now = new Date().toISOString();
-        const history = [...(view.passwordHistory || [])];
-        if (view.type === CipherType.Login && original.login) {
+        const history = [...(original.passwordHistory || [])];
+        if (view.type === CipherType.Login && original.login && view.login) {
             const oldPw = original.login.password;
-            if (oldPw && oldPw !== (view.login?.password ?? null)) {
+            if (oldPw && oldPw !== (view.login.password ?? null)) {
                 history.unshift({ password: oldPw, lastUsedDate: now });
                 view.login.passwordRevisionDate = now;
+            } else {
+                view.login.passwordRevisionDate = original.login.passwordRevisionDate || null;
             }
         }
         const oldHidden = (original.fields || []).filter((f) => f.type === FieldType.Hidden && f.name && f.value);
@@ -621,8 +661,8 @@ export class Vault {
         if (view.id) {
             const original = this.ciphers.get(view.id);
             if (original?.decryptError) throw new CryptoError("Items which can not be fully decrypted can not be edited here");
-            Vault.updateHistory(view, original);
-            const req = await this.encryptCipher(view);
+            // The history is added to a copy, so retrying a failed save does not add it twice
+            const req = await this.encryptCipher(Vault.updateHistory(cloneView(view), original));
             const raw = await this.api.updateCipher(view.id, req);
             const v = await this._storeCipher(raw);
             this.changed("cipher");
@@ -689,8 +729,9 @@ export class Vault {
     async setFavorite(id, favorite) {
         const v = this.ciphers.get(id);
         if (!v) return;
-        await this.api.put(`/api/ciphers/${id}/partial`, { folderId: v.folderId, favorite });
-        v.favorite = favorite;
+        const raw = await this.api.put(`/api/ciphers/${id}/partial`, { folderId: v.folderId, favorite });
+        if (raw?.id) await this._storeCipher(raw);
+        else v.favorite = favorite;
         this.changed("cipher");
     }
 
@@ -708,7 +749,9 @@ export class Vault {
 
     async restoreCiphers(ids) {
         for (const part of chunk(ids, 500)) {
-            await this.api.restoreCiphers(part);
+            const res = await this.api.restoreCiphers(part);
+            // Restoring changes the revision date, keep the returned items so they can be edited right away
+            for (const raw of res?.data || []) await this._storeCipher(raw);
             for (const id of part) {
                 const v = this.ciphers.get(id);
                 if (v) v.deletedDate = null;
@@ -1023,6 +1066,19 @@ export class Vault {
         const text = hay.filter((x) => typeof x === "string").join("\n").toLowerCase();
         return terms.every((t) => text.includes(t));
     }
+}
+
+// Every method which changes the vault is tracked, see `sync()`
+for (const name of [
+    "saveCipher", "shareCiphers", "setCipherCollections", "moveCiphers", "setFavorite", "trashCiphers", "restoreCiphers",
+    "deleteCiphersPermanently", "addAttachment", "deleteAttachment", "createFolder", "ensureFolderPath", "moveFolderPath",
+    "deleteFolderPath", "mergeDuplicateFolders", "deleteEmptyFolders", "repairFolderTree", "createCollection",
+    "ensureCollectionPath", "renameCollection", "deleteCollection",
+]) {
+    const method = Vault.prototype[name];
+    Vault.prototype[name] = function (...args) {
+        return this._op(() => method.apply(this, args));
+    };
 }
 
 // A deep enough copy of a cipher view for editing

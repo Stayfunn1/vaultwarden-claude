@@ -35,14 +35,23 @@ export async function importEntries(vault, converted, options = {}, onProgress =
     if (organizationId && converted.entries.some((e) => !e.folderPath)) paths.push(orgRootCollection);
 
     let done = 0;
-    onProgress({ phase: organizationId ? "Creating collections" : "Creating folders", done, total: paths.length });
-    // Parents first, so `ensure*` never has to create them on the fly
-    const sorted = [...paths].sort((a, b) => a.split("/").length - b.split("/").length || a.localeCompare(b));
-    for (const p of sorted) {
-        checkCancelled();
-        const id = organizationId ? await vault.ensureCollectionPath(organizationId, p) : await vault.ensureFolderPath(p);
-        containerIds.set(p, id);
-        onProgress({ phase: organizationId ? "Creating collections" : "Creating folders", done: ++done, total: paths.length });
+    const phase = organizationId ? "Creating collections" : "Creating folders";
+    onProgress({ phase, done, total: paths.length });
+    // One level at a time, so parents always exist before their children. Paths of the same level are
+    // independent of each other (nesting only comes from the names) and can be created in parallel.
+    const levels = new Map();
+    for (const p of new Set(paths)) {
+        const depth = p.split("/").length;
+        if (!levels.has(depth)) levels.set(depth, []);
+        levels.get(depth).push(p);
+    }
+    for (const depth of [...levels.keys()].sort((a, b) => a - b)) {
+        await mapLimit(levels.get(depth), 6, async (p) => {
+            checkCancelled();
+            const id = organizationId ? await vault.ensureCollectionPath(organizationId, p) : await vault.ensureFolderPath(p);
+            containerIds.set(p, id);
+            onProgress({ phase, done: ++done, total: paths.length });
+        });
     }
     const containerFor = (entry) => {
         if (organizationId) return containerIds.get(entry.folderPath || orgRootCollection);
@@ -76,18 +85,18 @@ export async function importEntries(vault, converted, options = {}, onProgress =
     }
 
     // ----- 3. Encrypt -----------------------------------------------------------------
-    const prepared = [];
     done = 0;
-    for (const entry of entries) {
+    // WebCrypto runs asynchronously, so encrypting several entries at once is a lot faster
+    const prepared = await mapLimit(entries, 8, async (entry) => {
         checkCancelled();
         const view = entry.view;
         view.organizationId = organizationId;
         view.folderId = organizationId ? null : containerFor(entry);
         const cipherKey = SymmetricKey.generate();
         const req = await vault.encryptCipher(view, { organizationId, cipherKey });
-        prepared.push({ entry, req, cipherKey, containerId: containerFor(entry) });
         if (++done % 25 === 0 || done === entries.length) onProgress({ phase: "Encrypting", done, total: entries.length });
-    }
+        return { entry, req, cipherKey, containerId: containerFor(entry) };
+    });
 
     const plain = prepared.filter((p) => !p.entry.attachments.length);
     const withFiles = prepared.filter((p) => p.entry.attachments.length);
@@ -117,7 +126,13 @@ export async function importEntries(vault, converted, options = {}, onProgress =
             await sendBatch(vault, batch, organizationId);
             result.created += batch.length;
         } catch (e) {
-            // Find the broken entries by sending them one by one
+            // Without an answer from the server (network error, proxy timeout, 5xx) the batch may or may
+            // not have been stored. Retrying could create duplicates, so stop and let the user run the
+            // import again: "skip existing entries" then continues where it stopped.
+            if (!(e.status >= 400 && e.status < 500)) {
+                throw new Error(`The import was interrupted: ${e.message}. Run the import again, entries that were already imported are skipped.`);
+            }
+            // The server rejected the batch (nothing was stored), find the broken entries one by one
             for (const p of batch) {
                 try {
                     await createSingle(vault, p, organizationId);
@@ -144,6 +159,7 @@ export async function importEntries(vault, converted, options = {}, onProgress =
             progress();
             return;
         }
+        let uploadedFiles = 0;
         for (const att of p.entry.attachments) {
             try {
                 const attKey = SymmetricKey.generate();
@@ -154,11 +170,25 @@ export async function importEntries(vault, converted, options = {}, onProgress =
                     await encryptBytes(attKey.raw, p.cipherKey),
                     encData,
                 );
-                result.attachments++;
+                uploadedFiles++;
             } catch (err) {
-                result.warnings.push(`${p.entry.sourceTitle}: attachment "${att.fileName}" failed: ${err.message}`);
+                // An entry is imported completely or not at all: an incomplete entry would be skipped
+                // when the import is run again, so its attachment (or long notes) would be lost.
+                result.created--;
+                const error = `attachment "${att.fileName}" failed: ${err.message}`;
+                try {
+                    await vault.api.deleteCiphersPermanently([cipherId]);
+                    result.failed.push({ name: p.entry.sourceTitle, path: p.entry.folderPath, error });
+                } catch {
+                    result.created++;
+                    result.warnings.push(`${p.entry.sourceTitle}: ${error} (the entry was imported without it)`);
+                }
+                uploaded++;
+                progress();
+                return;
             }
         }
+        result.attachments += uploadedFiles;
         uploaded++;
         progress();
     });
@@ -166,6 +196,29 @@ export async function importEntries(vault, converted, options = {}, onProgress =
 
     onProgress({ phase: "Synchronizing", done: 0, total: 1 });
     await vault.sync();
+
+    // Verify that every entry really is in the vault now
+    const present = new Set();
+    for (const c of vault.ciphers.values()) {
+        if (c.deletedDate || (c.organizationId || null) !== organizationId) continue;
+        if (organizationId) {
+            for (const colId of c.collectionIds) {
+                const col = vault.collections.get(colId);
+                if (col) present.add(entryKey(col.path, c.name, c.login?.username));
+            }
+        } else {
+            const f = c.folderId ? vault.folders.get(c.folderId) : null;
+            present.add(entryKey(f ? f.path : "", c.name, c.login?.username));
+        }
+    }
+    const failedNames = new Set(result.failed.map((f) => entryKey(f.path, f.name, "")));
+    for (const p of prepared) {
+        const path = organizationId ? p.entry.folderPath || orgRootCollection : p.entry.folderPath;
+        if (!present.has(entryKey(path, p.entry.view.name, p.entry.view.login?.username)) && !failedNames.has(entryKey(p.entry.folderPath, p.entry.sourceTitle, ""))) {
+            result.created--;
+            result.failed.push({ name: p.entry.sourceTitle, path: p.entry.folderPath, error: "not found in the vault after the import" });
+        }
+    }
     onProgress({ phase: "Done", done: 1, total: 1 });
     return result;
 }

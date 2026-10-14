@@ -119,7 +119,6 @@ const DEFAULT_SETTINGS = {
     clipboardSeconds: 20,
     lockMinutes: 15,
     theme: "auto",
-    expanded: {},
     treeWidth: 260,
     detailsHeight: 190,
     rememberEmail: true,
@@ -133,6 +132,8 @@ export const settings = (() => {
     } catch {
         /* defaults */
     }
+    // Older versions stored the expanded folders (with their names) unencrypted
+    delete data.expanded;
     return new Proxy(data, {
         set(target, key, value) {
             target[key] = value;
@@ -326,7 +327,8 @@ export function closeAllDialogs() {
     for (const close of [...dialogStack].reverse()) close(undefined);
 }
 
-// Opens a modal. `build(close)` returns { body, buttons, onOpen, initialFocus }.
+// Opens a modal. `build(close)` returns { body, buttons, onOpen, onEnter, onCancel, initialFocus }.
+// `onCancel` replaces the default of Esc and the close button (closing without a value).
 // Returns a promise resolving with the value passed to close().
 export function dialog({ title, className = "", build, width }) {
     return new Promise((resolve) => {
@@ -344,7 +346,8 @@ export function dialog({ title, className = "", build, width }) {
         };
         const previousFocus = document.activeElement;
         const parts = build(close);
-        const titleBar = h("div", { class: "modal-title" }, h("span", null, title), h("button", { class: "modal-x", type: "button", title: "Close", "aria-label": "Close", onclick: () => close(undefined) }, "×"));
+        const cancel = () => (parts.onCancel ? parts.onCancel() : close(undefined));
+        const titleBar = h("div", { class: "modal-title" }, h("span", null, title), h("button", { class: "modal-x", type: "button", title: "Close", "aria-label": "Close", onclick: cancel }, "×"));
         const footer = parts.buttons ? h("div", { class: "modal-buttons" }, parts.buttons) : null;
         box.append(titleBar, h("div", { class: "modal-body" }, parts.body), footer || "");
         backdrop.appendChild(box);
@@ -353,7 +356,7 @@ export function dialog({ title, className = "", build, width }) {
         box.addEventListener("keydown", (e) => {
             if (e.key === "Escape") {
                 e.stopPropagation();
-                close(undefined);
+                cancel();
             } else if (e.key === "Enter" && parts.onEnter && !(e.target instanceof HTMLTextAreaElement) && !(e.target instanceof HTMLButtonElement)) {
                 e.preventDefault();
                 e.stopPropagation();
