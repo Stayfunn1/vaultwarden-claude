@@ -41,6 +41,7 @@
     --icon-user: #9cc3e5;
     --icon-link: #0063b1;
     --icon-lock: #f2c94c;
+    --icon-moon: #5a6b8c;
     color-scheme: light;
 }
 
@@ -70,6 +71,10 @@
         --icon-add: #3fbf3f;
         --icon-del: #ff6b5b;
         --icon-link: #4aa3ff;
+        --icon-moon: #c9d4ea;
+        --ok: #6ccb5f;
+        --warn: #f0b45a;
+        --danger: #ff8a80;
         color-scheme: dark;
     }
 }
@@ -99,6 +104,10 @@
     --icon-add: #3fbf3f;
     --icon-del: #ff6b5b;
     --icon-link: #4aa3ff;
+    --icon-moon: #c9d4ea;
+    --ok: #6ccb5f;
+    --warn: #f0b45a;
+    --danger: #ff8a80;
     color-scheme: dark;
 }
 
@@ -186,9 +195,10 @@ button.primary:hover:not(:disabled) {
     background: var(--accent);
 }
 
+/* The same strong red in both themes, white text stays readable */
 button.danger.primary {
-    background: var(--danger);
-    border-color: var(--danger);
+    background: #c42b1c;
+    border-color: #c42b1c;
 }
 
 .wide {
@@ -243,12 +253,19 @@ a {
 }
 
 .auth-box {
+    position: relative;
     background: var(--panel);
     border: 1px solid var(--border);
     box-shadow: var(--shadow);
     padding: 24px 28px;
     width: 380px;
     max-width: 100%;
+}
+
+.auth-theme {
+    position: absolute;
+    top: 6px;
+    right: 6px;
 }
 
 .auth-logo {

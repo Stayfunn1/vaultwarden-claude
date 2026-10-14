@@ -17,8 +17,15 @@ export async function run({ base }) {
     const orgDialog = page.locator(".org-modal");
     const memberRow = () => orgDialog.locator(`tr[data-member="${member}"]`);
     try {
+        console.log("\n--- Dark mode ---");
+        await page.goto(`${base}/manager/`);
+        await page.click(".auth-theme");
+        assert((await page.evaluate(() => document.documentElement.dataset.theme)) === "dark", "dark mode switched on at the login page");
+        const background = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+        assert(background === "rgb(32, 32, 32)", `dark background (${background})`);
         await managerLogin(page, base, owner, password);
         await page.waitForSelector(".main-view", { timeout: 60000 });
+        assert((await page.locator(".toolbar .theme-toggle").getAttribute("title")) === "Switch to light mode", "toolbar offers light mode, the choice is remembered");
 
         console.log("\n--- New organization ---");
         await menu("Organizations", "New organization");
@@ -102,6 +109,8 @@ export async function run({ base }) {
         await page.waitForSelector('.modal tr[data-access="Group: Editors"]');
         assert(await page.locator('.modal tr[data-access="Group: Editors"] input[type=checkbox]').isChecked(), "collection access opened from the tree");
         await page.keyboard.press("Escape");
+        await page.locator(".toolbar .theme-toggle").click();
+        assert((await page.evaluate(() => document.documentElement.dataset.theme)) === "light", "light mode switched on from the toolbar");
         assert(errors.length === 0, `no browser errors (${errors.join(" | ")})`);
     } finally {
         await browser.close();

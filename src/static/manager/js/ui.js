@@ -69,6 +69,8 @@ const ICONS = {
     paperclip: '<path d="M10.5 4.5l-5 5a1.5 1.5 0 0 0 2 2l5.5-5.5a2.8 2.8 0 0 0-4-4L3.5 7.5a4 4 0 0 0 5.5 5.5l4-4" fill="none" stroke="currentColor" stroke-width="1.3"/>',
     up: '<path d="M8 3v10M4 7l4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.5"/>',
     down: '<path d="M8 3v10M4 9l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5"/>',
+    sun: '<circle cx="8" cy="8" r="3" fill="var(--icon-star)" stroke="var(--icon-star-stroke)"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.4 1.4M11.6 11.6L13 13M3 13l1.4-1.4M11.6 4.4L13 3" stroke="var(--icon-star-stroke)" stroke-width="1.3"/>',
+    moon: '<path d="M10.5 2a6 6 0 1 0 3.5 9.5A5 5 0 0 1 10.5 2z" fill="var(--icon-moon)" stroke="var(--icon-stroke)"/>',
     caretRight: '<path d="M6 4l4 4-4 4z" fill="currentColor"/>',
     caretDown: '<path d="M4 6l4 4 4-4z" fill="currentColor"/>',
 };

@@ -40,10 +40,36 @@ const SSO_RESULT_KEY = "vwm.sso.result";
 const BASE_URL = new URL("../", window.location.href).href.replace(/\/$/, "");
 const SSO_REDIRECT = `${BASE_URL}/manager/sso-callback.html`;
 
+const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+
+function effectiveTheme() {
+    return settings.theme === "light" || settings.theme === "dark" ? settings.theme : darkQuery.matches ? "dark" : "light";
+}
+
+function updateThemeButton(btn) {
+    const dark = effectiveTheme() === "dark";
+    const title = dark ? "Switch to light mode" : "Switch to dark mode";
+    btn.title = title;
+    btn.setAttribute("aria-label", title);
+    clear(btn).appendChild(icon(dark ? "sun" : "moon"));
+}
+
 function applyTheme() {
     const t = settings.theme;
     if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
     else delete document.documentElement.dataset.theme;
+    document.querySelectorAll(".theme-toggle").forEach(updateThemeButton);
+}
+darkQuery.addEventListener("change", applyTheme);
+
+// Switches between light and dark (the View menu also offers "Follow system")
+function themeToggleButton(cls) {
+    const btn = h("button", { type: "button", class: `${cls} theme-toggle`, onclick: () => {
+        settings.theme = effectiveTheme() === "dark" ? "light" : "dark";
+        applyTheme();
+    } });
+    updateThemeButton(btn);
+    return btn;
 }
 
 function remember2faKey(email) {
@@ -133,6 +159,7 @@ class App {
         const box = h(
             "div",
             { class: "auth-box" },
+            themeToggleButton("tb-btn auth-theme"),
             h("div", { class: "auth-logo" }, h("img", { src: "../vw_static/vaultwarden-icon.png", alt: "", width: 48, height: 48 }), h("div", null, h("h1", null, "Vaultwarden Manager"), h("div", { class: "muted" }, title))),
             ...content,
         );
@@ -882,6 +909,7 @@ class App {
             h("span", { class: "tb-sep" }),
             btn("key", "Password generator (Ctrl+G)", () => generatorDialog()),
             h("span", { class: "tb-spacer" }),
+            themeToggleButton("tb-btn"),
             h("label", { class: "search-box" }, icon("search"), this.searchInput),
         );
     }
