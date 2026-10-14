@@ -76,7 +76,7 @@ pub fn jwt_claims(token: &str) -> Option<Value> {
 
 /// Checks `SSO_ACCESS_GROUPS` for groups received from the identity provider
 pub fn check_access(groups: Option<&[String]>) -> EmptyResult {
-    let wanted = config_list(&CONFIG.sso_access_groups());
+    let wanted = access_groups();
     if wanted.is_empty() {
         return Ok(());
     }
@@ -95,7 +95,7 @@ pub fn check_access(groups: Option<&[String]>) -> EmptyResult {
 /// Checks `SSO_ACCESS_GROUPS` with the groups stored at the last SSO login, for non SSO logins.
 /// Users which never logged in with SSO are not affected.
 pub async fn check_stored_access(user: &User, conn: &DbConn) -> EmptyResult {
-    if config_list(&CONFIG.sso_access_groups()).is_empty() {
+    if access_groups().is_empty() {
         return Ok(());
     }
     match SsoUser::find_by_user(&user.uuid, conn).await.and_then(|s| s.groups()) {
@@ -104,22 +104,66 @@ pub async fn check_stored_access(user: &User, conn: &DbConn) -> EmptyResult {
     }
 }
 
+/// The groups of `SSO_ACCESS_GROUPS`
+pub fn access_groups() -> Vec<String> {
+    config_list(&CONFIG.sso_access_groups())
+}
+
+/// The groups of `SSO_ORG_CREATION_GROUPS`
+pub fn org_creation_groups() -> Vec<String> {
+    config_list(&CONFIG.sso_org_creation_groups())
+}
+
+/// `Some(false)` when `SSO_ACCESS_GROUPS` refuses the given (stored) groups, `None` when it does not apply
+pub fn has_access(groups: Option<&[String]>) -> Option<bool> {
+    let wanted = access_groups();
+    match groups {
+        Some(groups) if !wanted.is_empty() => Some(matches_any(groups, &wanted)),
+        _ => None,
+    }
+}
+
+/// True when `ORG_CREATION_USERS` names everyone (empty or `all`)
+pub fn org_creation_everyone() -> bool {
+    let users = CONFIG.org_creation_users();
+    let users = users.trim();
+    users.is_empty() || users.eq_ignore_ascii_case("all")
+}
+
+/// The e-mail addresses listed in `ORG_CREATION_USERS`
+pub fn org_creation_users() -> Vec<String> {
+    if org_creation_everyone() {
+        return Vec::new();
+    }
+    CONFIG
+        .org_creation_users()
+        .split(',')
+        .map(|u| u.trim().to_lowercase())
+        .filter(|u| !u.is_empty() && u != "none" && u != "all")
+        .collect()
+}
+
+/// Why a user may create organizations: `everyone`, `user` (listed in `ORG_CREATION_USERS`) or `group`
+/// (`SSO_ORG_CREATION_GROUPS`). With creation groups, "everyone" no longer applies, only an explicit list of users.
+pub fn org_creation_reason(email: &str, groups: Option<&[String]>) -> Option<&'static str> {
+    let wanted = org_creation_groups();
+    if wanted.is_empty() && org_creation_everyone() {
+        return Some("everyone");
+    }
+    let email = email.to_lowercase();
+    if org_creation_users().contains(&email) {
+        return Some("user");
+    }
+    match groups {
+        Some(groups) if matches_any(groups, &wanted) => Some("group"),
+        _ => None,
+    }
+}
+
 /// `ORG_CREATION_USERS`, extended with `SSO_ORG_CREATION_GROUPS`
 pub async fn can_create_org(user: &User, conn: &DbConn) -> bool {
-    let wanted = config_list(&CONFIG.sso_org_creation_groups());
-    if wanted.is_empty() {
-        return CONFIG.is_org_creation_allowed(&user.email);
-    }
-    // With creation groups, "everyone" no longer applies, only an explicit list of users is kept
-    let users = CONFIG.org_creation_users();
-    let email = user.email.to_lowercase();
-    if users.split(',').any(|u| u.trim() == email) {
-        return true;
-    }
-    match SsoUser::find_by_user(&user.uuid, conn).await.and_then(|s| s.groups()) {
-        Some(groups) => matches_any(&groups, &wanted),
-        None => false,
-    }
+    let groups = SsoUser::find_by_user(&user.uuid, conn).await.and_then(|s| s.groups());
+    org_creation_reason(&user.email, groups.as_deref()).is_some()
 }
 
 /// Stores the groups, runs the organization sync and checks `SSO_ACCESS_GROUPS`.

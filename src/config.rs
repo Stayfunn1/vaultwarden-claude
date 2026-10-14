@@ -1545,6 +1545,13 @@ impl Config {
         Ok(())
     }
 
+    /// Changes `ORG_CREATION_USERS` in the saved configuration, keeping all other saved settings
+    pub async fn set_org_creation_users(&self, value: String) -> Result<(), Error> {
+        let mut builder = self.inner.read().unwrap()._usr.clone();
+        builder.org_creation_users = Some(value);
+        self.update_config(builder, true).await
+    }
+
     /// Tests whether an email's domain is allowed. A domain is allowed if it
     /// is in signups_domains_whitelist, or if no whitelist is set (so there
     /// are no domain restrictions in effect).

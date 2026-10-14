@@ -1,4 +1,44 @@
 <main class="container-xxl">
+    <div id="permissions-block" class="my-3 p-3 rounded shadow small">
+        <h6 class="border-bottom pb-2 mb-3">Permissions</h6>
+        <div class="row g-4">
+            <div class="col-lg-4">
+                <strong class="d-block mb-1">Who can use Vaultwarden</strong>
+                {{#if page_data.permissions.access_groups}}
+                <span class="d-block">Only members of the identity provider groups <code>{{page_data.permissions.access_groups}}</code> (<code>SSO_ACCESS_GROUPS</code>).</span>
+                {{else}}
+                <span class="d-block">Every user with an enabled account{{#if sso_enabled}}. Set <code>SSO_ACCESS_GROUPS</code> to allow only members of identity provider groups{{/if}}.</span>
+                {{/if}}
+                <span class="d-block text-body-secondary">Disable single users with <em>Disable User</em> below.</span>
+            </div>
+            <div class="col-lg-4">
+                <label for="orgCreationMode" class="d-block mb-1"><strong>Who can create organizations</strong></label>
+                <select id="orgCreationMode" class="form-select form-select-sm">
+                    {{#each page_data.permissions.org_creation_options}}
+                    <option value="{{value}}"{{#if selected}} selected{{/if}}>{{label}}</option>
+                    {{/each}}
+                </select>
+                {{#if page_data.permissions.org_creation_groups}}
+                <span class="d-block mt-1">Creation groups: <code>{{page_data.permissions.org_creation_groups}}</code> (<code>SSO_ORG_CREATION_GROUPS</code>).</span>
+                {{/if}}
+                <span class="d-block text-body-secondary mt-1">The creator becomes owner of the new organization. Owners and admins manage its members, also in the web manager.</span>
+            </div>
+            {{#if sso_enabled}}
+            <div class="col-lg-4">
+                <strong class="d-block mb-1">Identity provider sync</strong>
+                {{#if page_data.permissions.org_sync}}
+                <span class="d-block">Organization memberships follow the groups <code>{{page_data.permissions.org_sync_prefix}}/&lt;organization&gt;[/owners|admins|managers|&lt;group&gt;]</code>.</span>
+                {{else}}
+                <span class="d-block">Organization sync is off (<code>SSO_ORG_SYNC</code>).</span>
+                {{/if}}
+                <span class="d-block">Keycloak directory sync: {{#if page_data.permissions.directory_sync_schedule}}<code>{{page_data.permissions.directory_sync_schedule}}</code>{{else}}not scheduled{{/if}}</span>
+                <span class="d-block text-body-secondary" id="directorySyncLast">Last run: {{#if page_data.permissions.directory_sync_last}}{{page_data.permissions.directory_sync_last}}{{else}}not since the start of the server{{/if}}</span>
+                <button type="button" class="btn btn-sm btn-outline-primary mt-1" id="directorySyncNow">Sync with Keycloak now</button>
+            </div>
+            {{/if}}
+        </div>
+    </div>
+
     <div id="users-block" class="my-3 p-3 rounded shadow">
         <h6 class="border-bottom pb-2 mb-3">Registered Users</h6>
         <div class="table-responsive-xl small">
@@ -14,11 +54,12 @@
                         <th class="vw-entries">Entries</th>
                         <th class="vw-attachments">Attachments</th>
                         <th class="vw-organizations">Organizations</th>
+                        <th class="vw-permissions">Permissions</th>
                         <th class="vw-actions text-end">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
-                    {{#each page_data}}
+                    {{#each page_data.users}}
                     <tr>
                         <td>
                             <svg width="48" height="48" class="float-start me-2 rounded" data-jdenticon-value="{{email}}">
@@ -27,8 +68,15 @@
                                 <span class="d-block">{{email}}</span>
                                 <span class="d-block">
                                     {{#unless user_enabled}}
+                                        {{#if disabled_by_sync}}
+                                        <span class="badge bg-danger me-2" title="Disabled in or removed from Keycloak, enabled again by the directory sync when the user returns">Disabled in Keycloak</span>
+                                        {{else}}
                                         <span class="badge bg-danger me-2" title="User is disabled">Disabled</span>
+                                        {{/if}}
                                     {{/unless}}
+                                    {{#if sso_no_access}}
+                                        <span class="badge bg-danger me-2" title="Not a member of the access groups of the identity provider">No access</span>
+                                    {{/if}}
                                     {{#if twoFactorEnabled}}
                                         <span class="badge bg-success me-2" title="2FA is enabled">2FA</span>
                                     {{/if}}
@@ -66,6 +114,25 @@
                             {{#each organizations}}
                             <button class="badge" data-bs-toggle="modal" data-bs-target="#userOrgTypeDialog" data-vw-org-type="{{type}}" data-vw-org-uuid="{{id}}" data-vw-org-name="{{name}}">{{name}}</button>
                             {{/each}}
+                            </div>
+                        </td>
+                        <td>
+                            <div data-vw-user-uuid="{{id}}" data-vw-user-email="{{email}}">
+                                {{#if org_creation}}
+                                <span class="badge bg-success" title="{{org_creation_title}}">Creates organizations</span>
+                                {{/if}}
+                                {{#unless ../page_data.permissions.org_creation_everyone}}
+                                {{#if org_creation_listed}}
+                                <button type="button" class="btn btn-sm btn-link p-0 border-0 d-block" vw-org-creation="false">Disallow creating organizations</button>
+                                {{else}}
+                                <button type="button" class="btn btn-sm btn-link p-0 border-0 d-block" vw-org-creation="true">Allow creating organizations</button>
+                                {{/if}}
+                                {{/unless}}
+                                {{#if idp_groups}}
+                                <span class="d-block mt-1 vw-idp-groups" title="Groups of the identity provider at the last login or sync">
+                                {{#each idp_groups}}<span class="badge bg-secondary-subtle text-secondary-emphasis border me-1">{{this}}</span>{{/each}}
+                                </span>
+                                {{/if}}
                             </div>
                         </td>
                         <td class="text-end px-1 small">

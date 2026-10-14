@@ -1,5 +1,5 @@
 // Keycloak directory sync: accounts and groups from the Keycloak admin API, disabling of removed users
-import { register, login, createOrg, setPassword, ssoToken, refreshToken, adminSession, assert } from "../lib/helpers.mjs";
+import { register, login, createOrg, setPassword, ssoToken, refreshToken, adminSession, assert, launchBrowser, screenshotPath } from "../lib/helpers.mjs";
 import { startServer, SSO_PORT, OIDC_PORT } from "../lib/env.mjs";
 import { startMockOidc } from "../lib/mock-oidc.mjs";
 
@@ -99,6 +99,50 @@ export async function run() {
         publish();
         r = await sync();
         assert(r.body.created === 1 && (await account("frank")), "frank added to the access group: account created");
+
+        console.log("\n--- Admin page: permissions ---");
+        const { browser, page, errors } = await launchBrowser();
+        try {
+            const dialogs = [];
+            page.on("dialog", (d) => {
+                dialogs.push(d.message());
+                d.accept();
+            });
+            await page.goto(`${base}/admin`);
+            await page.fill("input[name=token]", ADMIN_TOKEN);
+            await page.click("button[type=submit]");
+            await page.goto(`${base}/admin/users/overview`);
+            await page.waitForSelector("#permissions-block");
+            const aliceRow = page.locator("#users-table tbody tr", { hasText: "alice@example.com" });
+            assert((await aliceRow.locator(".vw-idp-groups").textContent()).includes("vaultwarden/Family/owners"), "identity provider groups shown per user");
+            assert((await aliceRow.locator("text=Creates organizations").count()) === 1, "everyone may create organizations by default");
+
+            await Promise.all([page.waitForNavigation(), page.selectOption("#orgCreationMode", "selected")]);
+            assert(dialogs.some((d) => d.includes("Only the users allowed")), "confirmation before restricting organization creation");
+            assert((await aliceRow.locator("text=Creates organizations").count()) === 0, "nobody may create organizations yet");
+            // alice's sessions ended when the administrator disabled her above
+            const a2 = await login(base, "alice@example.com", password);
+            const denied = await createOrg(a2.vault, "Denied", alice.publicKey).then(() => "", (e) => e.message);
+            assert(denied.includes("not allowed"), "organization creation refused");
+
+            await Promise.all([page.waitForNavigation(), aliceRow.locator("button[vw-org-creation=true]").click()]);
+            assert((await aliceRow.locator("text=Creates organizations").count()) === 1, "organization creation allowed for alice");
+            assert((await page.locator("#users-table tbody tr", { hasText: "frank@example.com" }).locator("text=Creates organizations").count()) === 0, "not for frank");
+            assert(!!(await createOrg(a2.vault, "Work", alice.publicKey)), "alice creates a second organization");
+
+            await Promise.all([page.waitForNavigation(), page.click("#directorySyncNow")]);
+            assert(dialogs.some((d) => d.startsWith("Directory sync finished: 4 users")), "sync started from the admin page");
+            assert((await page.locator("#directorySyncLast").textContent()).includes("4 users"), "last sync shown");
+            await page.screenshot({ path: screenshotPath("20-admin-permissions"), fullPage: true });
+
+            await Promise.all([page.waitForNavigation(), aliceRow.locator("button[vw-org-creation=false]").click()]);
+            assert((await aliceRow.locator("text=Creates organizations").count()) === 0, "organization creation taken away again");
+            await Promise.all([page.waitForNavigation(), page.selectOption("#orgCreationMode", "all")]);
+            assert((await aliceRow.locator("text=Creates organizations").count()) === 1, "everyone may create organizations again");
+            assert(errors.length === 0, `no browser errors (${errors.join(" | ")})`);
+        } finally {
+            await browser.close();
+        }
 
         console.log("\n--- Failures change nothing ---");
         idp.setAdminStatus(403);

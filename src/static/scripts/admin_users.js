@@ -1,5 +1,5 @@
 "use strict";
-/* global DataTable, _post:readable, _delete:readable, BASE_URL:readable, reload:readable, jdenticon:readable */
+/* global DataTable, _post:readable, _delete:readable, BASE_URL:readable, reload:readable, msg:readable, jdenticon:readable */
 
 function deleteUser(event) {
     event.preventDefault();
@@ -159,6 +159,59 @@ function resendUserInvite(event) {
     }
 }
 
+function setOrgCreation(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    const id = event.target.parentNode.dataset.vwUserUuid;
+    const allowed = event.target.getAttribute("vw-org-creation") === "true";
+    if (!id) {
+        alert("Required parameters not found!");
+        return false;
+    }
+    _post(`${BASE_URL}/admin/users/${id}/org-creation`,
+        null,
+        "Error changing the organization creation permission",
+        JSON.stringify({ "allowed": allowed })
+    );
+}
+
+function setOrgCreationMode(event) {
+    const mode = event.target.value;
+    const text = mode === "all"
+        ? "Allow everyone to create organizations?"
+        : "Only the users allowed in the user list may create organizations from now on. Continue?";
+    if (!confirm(text)) {
+        event.target.value = mode === "all" ? "selected" : "all";
+        return;
+    }
+    _post(`${BASE_URL}/admin/permissions/org-creation`,
+        null,
+        "Error changing who can create organizations",
+        JSON.stringify({ "mode": mode })
+    );
+}
+
+function directorySyncNow(event) {
+    event.preventDefault();
+    event.target.disabled = true;
+    event.target.textContent = "Syncing…";
+    fetch(`${BASE_URL}/admin/sso/directory-sync`, {
+        method: "POST",
+        mode: "same-origin",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" }
+    }).then(async resp => {
+        const body = await resp.json().catch(() => null);
+        if (!resp.ok) {
+            throw new Error(body?.errorModel?.message || `${resp.status} ${resp.statusText}`);
+        }
+        const skipped = body.skipped.length ? `\n\nSkipped:\n${body.skipped.join("\n")}` : "";
+        msg(`Directory sync finished: ${body.users} users, ${body.created} created, ${body.linked} linked, ${body.disabled} disabled, ${body.enabled} enabled.${skipped}`);
+    }).catch(e => {
+        msg(`Directory sync failed: ${e.message}`);
+    });
+}
+
 const ORG_TYPES = {
     "0": {
         "name": "Owner",
@@ -251,6 +304,9 @@ function initUserTable() {
     document.querySelectorAll("button[vw-resend-user-invite]").forEach(btn => {
         btn.addEventListener("click", resendUserInvite);
     });
+    document.querySelectorAll("button[vw-org-creation]").forEach(btn => {
+        btn.addEventListener("click", setOrgCreation);
+    });
 
     if (jdenticon) {
         jdenticon();
@@ -318,6 +374,14 @@ document.addEventListener("DOMContentLoaded", (/*event*/) => {
     const btnUserOrgTypeForm = document.getElementById("userOrgTypeForm");
     if (btnUserOrgTypeForm) {
         btnUserOrgTypeForm.addEventListener("submit", updateUserOrgType);
+    }
+    const orgCreationMode = document.getElementById("orgCreationMode");
+    if (orgCreationMode) {
+        orgCreationMode.addEventListener("change", setOrgCreationMode);
+    }
+    const btnDirectorySync = document.getElementById("directorySyncNow");
+    if (btnDirectorySync) {
+        btnDirectorySync.addEventListener("click", directorySyncNow);
     }
     const btnInviteUserForm = document.getElementById("inviteUserForm");
     if (btnInviteUserForm) {
