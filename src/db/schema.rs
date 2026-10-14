@@ -273,6 +273,14 @@ table! {
 }
 
 table! {
+    manager_icons (owner_uuid) {
+        owner_uuid -> Text,
+        data -> Text,
+        revision_date -> Timestamp,
+    }
+}
+
+table! {
     sso_users (user_uuid) {
         user_uuid -> Text,
         identifier -> Text,

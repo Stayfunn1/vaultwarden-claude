@@ -6,10 +6,13 @@ import { MANAGER_JS, WORK } from "../lib/env.mjs";
 
 const keepass = await import(path.join(MANAGER_JS, "keepass.js"));
 const importer = await import(path.join(MANAGER_JS, "importer.js"));
+const { IconStore } = await import(path.join(MANAGER_JS, "iconstore.js"));
 const P = (s) => kdbxweb.ProtectedValue.fromString(s);
 
 export const SAMPLE_PASSWORD = "kpass";
 export const SAMPLE_ENTRIES = 603;
+// A 1x1 PNG, used as custom KeePass icon
+const PNG_ICON = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
 
 // A database with the KeePass features that matter for the migration
 export async function buildSampleDb() {
@@ -21,7 +24,12 @@ export async function buildSampleDb() {
     const slash = db.createGroup(root, "Work/Projects");
     db.createGroup(root, "Empty group");
 
+    internet.icon = 1; // World
+    const customIcon = kdbxweb.KdbxUuid.random();
+    db.meta.customIcons.set(customIcon.id, { data: new Uint8Array(PNG_ICON).buffer, name: "Jira" });
+
     const e1 = db.createEntry(mail);
+    e1.icon = 19; // E-mail
     e1.fields.set("Title", "Gmail");
     e1.fields.set("UserName", "alice@gmail.com");
     e1.fields.set("Password", P("old-password"));
@@ -40,6 +48,7 @@ export async function buildSampleDb() {
     e1.binaries.set("blob.bin", await db.createBinary(new Uint8Array(200000).map((_, i) => i % 251)));
 
     const e2 = db.createEntry(slash);
+    e2.customIcon = customIcon;
     e2.fields.set("Title", "Jira");
     e2.fields.set("UserName", "{REF:U@I:" + Buffer.from(e1.uuid.id, "base64").toString("hex").toUpperCase() + "}");
     e2.fields.set("Password", P("{REF:P@T:Gmail}"));
@@ -103,6 +112,12 @@ export async function run({ base }) {
     assert(j.attachments.some((a) => a.fileName === "notes.txt") && j.view.notes.length < 7100, "long notes moved to attachment");
     assert(j.attachments.some((a) => a.fileName === "Big field.txt"), "long field moved to attachment");
     assert(conv.entries.some((e) => e.view.name === "root.example.net"), "untitled entry named after host");
+    assert(conv.stats.icons === 3, "3 icons found (2 entries, 1 group)");
+    assert(conv.entries.find((e) => e.view.name === "Gmail").icon?.standard === 19, "standard entry icon");
+    assert(j.icon?.image === `data:image/png;base64,${PNG_ICON.toString("base64")}`, "custom entry icon as PNG");
+    assert(conv.groupIcons.get("Internet")?.standard === 1, "group icon");
+    assert(!conv.entries.find((e) => e.view.name === "Site 1").icon, "default icons are not stored");
+    assert(keepass.convertKeePass(opened, { importIcons: false }).stats.icons === 0, "icons can be left out");
     let wrongPw = null;
     try {
         await keepass.openKeePass(kdbxBytes, "wrong");
@@ -115,6 +130,7 @@ export async function run({ base }) {
     assert(xmlConv.entries.length === SAMPLE_ENTRIES, "XML export converts the same entries");
     assert(xmlConv.entries.find((e) => e.view.name === "Gmail").view.fields.find((f) => f.name === "Security answer").type === 1, "XML protected field stays hidden");
     assert(xmlConv.entries.find((e) => e.view.name === "Gmail").attachments.length === 2, "XML attachments");
+    assert(xmlConv.entries.find((e) => e.view.name === "Jira").icon?.image?.startsWith("data:image/png"), "XML custom icon");
 
     // Import into a personal vault
     const email = `import-${uid()}@example.com`;
@@ -122,8 +138,20 @@ export async function run({ base }) {
     const { publicKey } = await register(base, email, password);
     const { vault } = await login(base, email, password);
     await vault.ensureFolderPath("Internet"); // an existing folder must be reused
-    const res = await importer.importEntries(vault, keepass.convertKeePass(opened, {}), { skipExisting: true });
+    const icons = new IconStore(vault);
+    await icons.load();
+    const res = await importer.importEntries(vault, keepass.convertKeePass(opened, {}), { skipExisting: true, icons });
     assert(res.created === SAMPLE_ENTRIES && res.failed.length === 0, "all entries imported");
+    assert(res.icons === 3, "icons stored");
+    const reloaded = new IconStore(vault);
+    await reloaded.load();
+    const byName = (name, orgId = null) => [...vault.ciphers.values()].find((c) => c.name === name && (c.organizationId || null) === orgId);
+    assert(reloaded.itemIcon(byName("Gmail"))?.standard === 19, "standard icon of the imported entry");
+    assert(reloaded.itemIcon(byName("Jira"))?.image?.startsWith("data:image/png"), "custom icon of the imported entry");
+    const internetFolder = [...vault.folders.values()].find((f) => f.path === "Internet");
+    assert(reloaded.groupIcon(internetFolder.id, null)?.standard === 1, "icon of the imported folder");
+    const stored = await vault.api.get("/api/manager/icons");
+    assert(stored.personal.data.startsWith("2.") && !stored.personal.data.includes("data:image"), "icons are stored encrypted");
     assert(res.attachments === 4, "all attachments uploaded");
     assert([...vault.folders.values()].filter((f) => f.path === "Internet").length === 1, "existing folder reused, not duplicated");
     const again = await importer.importEntries(vault, keepass.convertKeePass(opened, {}), { skipExisting: true });
@@ -151,8 +179,11 @@ export async function run({ base }) {
 
     // Import into an organization
     const orgId = await createOrg(vault, "Team", publicKey);
-    const orgRes = await importer.importEntries(vault, keepass.convertKeePass(opened, { targetFolder: "KeePass" }), { organizationId: orgId });
+    const orgRes = await importer.importEntries(vault, keepass.convertKeePass(opened, { targetFolder: "KeePass" }), { organizationId: orgId, icons });
     assert(orgRes.created === SAMPLE_ENTRIES && orgRes.failed.length === 0, "organization import");
+    await reloaded.load();
+    assert(reloaded.itemIcon(byName("Gmail", orgId))?.standard === 19, "organization entry icon");
+    assert(reloaded.itemIcon(byName("Gmail"))?.standard === 19, "personal icons kept");
     bw.run(["sync"]);
     const orgItems = bw.json(["list", "items", "--organizationid", orgId]);
     assert(orgItems.length === SAMPLE_ENTRIES, "bw sees all organization items");

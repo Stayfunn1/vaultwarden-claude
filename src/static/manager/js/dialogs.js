@@ -151,6 +151,7 @@ export async function importKeePassDialog(app) {
                     h("div", null, h("b", null, String(s.entries)), " entries in ", h("b", null, String(converted.folderPaths.length)), " folders"),
                     h("div", null, h("b", null, String(files)), ` attachments (${formatBytes(s.attachmentBytes)})`, files > s.attachments ? ` incl. ${files - s.attachments} for long notes/fields` : ""),
                     h("div", null, h("b", null, String(s.fields)), " custom fields, ", h("b", null, String(s.totp)), " TOTP secrets", s.references ? `, ${s.references} ${s.references === 1 ? "entry uses" : "entries use"} field references` : ""),
+                    s.icons ? h("div", null, h("b", null, String(s.icons)), " entries and groups with their own icon") : "",
                 );
                 clear(warnings);
                 for (const w of converted.warnings.slice(0, 20)) warnings.appendChild(h("div", null, "⚠ " + w));
@@ -191,6 +192,7 @@ export async function importKeePassDialog(app) {
                         opt("importHistory", "Import old passwords as password history"),
                         opt("tagsField", "Keep tags in a \"Tags\" field"),
                         opt("expiryField", "Keep expiry dates in an \"Expires\" field"),
+                        opt("importIcons", "Import the icons of entries and groups"),
                         opt("includeRecycleBin", "Include the recycle bin"),
                         h("label", { class: "check" }, skip, "Skip entries that already exist (same folder, title and user name)"),
                     ),
@@ -208,12 +210,12 @@ export async function importKeePassDialog(app) {
     const progress = progressDialog("Importing…", { cancellable: true, onCancel: () => (signal.cancelled = true) });
     app.beginBusy();
     try {
-        const res = await importEntries(vault, converted, { ...result, signal }, (p) => progress.update(p.phase, p.done, p.total));
+        const res = await importEntries(vault, converted, { ...result, signal, icons: app.icons }, (p) => progress.update(p.phase, p.done, p.total));
         progress.close();
         const details = h(
             "div",
             null,
-            h("p", null, `${res.created} entries imported, ${res.attachments} attachments uploaded${res.skipped ? `, ${res.skipped} existing entries skipped` : ""}.`),
+            h("p", null, `${res.created} entries imported, ${res.attachments} attachments uploaded${res.icons ? `, ${res.icons} icons` : ""}${res.skipped ? `, ${res.skipped} existing entries skipped` : ""}.`),
             res.failed.length ? h("div", null, h("p", null, `${res.failed.length} entries failed:`), h("ul", { class: "error-list" }, res.failed.slice(0, 50).map((f) => h("li", null, `${f.path ? f.path + " / " : ""}${f.name}: ${f.error}`)))) : "",
             res.warnings.length ? h("div", null, h("p", null, "Warnings:"), h("ul", { class: "error-list" }, res.warnings.slice(0, 50).map((w) => h("li", null, w)))) : "",
         );

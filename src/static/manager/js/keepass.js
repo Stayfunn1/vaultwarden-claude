@@ -12,7 +12,7 @@
 //   {REF:...} references -> resolved to the referenced value
 // Values too large for the Bitwarden clients (long notes or fields) are kept as text attachments.
 
-import { argon2, b64decode, utf8 } from "./bwcrypto.js";
+import { argon2, b64decode, b64encode, utf8 } from "./bwcrypto.js";
 import { CipherType, FieldType, newCipherView, sanitizeSegment, normalizeFolderPath, FOLDER_DELIMITER } from "./vault.js";
 
 // Notes are limited to 10.000 encrypted characters by default, which is about 7400 plain bytes
@@ -30,8 +30,14 @@ export const DEFAULT_OPTIONS = {
     historyLimit: 5,
     tagsField: true,
     expiryField: true,
+    importIcons: true,
     targetFolder: "",
 };
+
+// The default icons of KeePass (key for entries, folder for groups) are not stored
+const DEFAULT_ENTRY_ICON = 0;
+const DEFAULT_GROUP_ICON = 48;
+const STANDARD_ICON_COUNT = 69;
 
 function kdbx() {
     const k = globalThis.kdbxweb;
@@ -312,6 +318,31 @@ function collectGroups(group, out = []) {
     return out;
 }
 
+function imageType(b) {
+    if (b[0] === 0x89 && b[1] === 0x50) return "image/png";
+    if (b[0] === 0xff && b[1] === 0xd8) return "image/jpeg";
+    if (b[0] === 0x47 && b[1] === 0x49) return "image/gif";
+    if (b[0] === 0 && b[1] === 0 && b[2] === 1 && b[3] === 0) return "image/x-icon";
+    if (b[0] === 0x3c) return "image/svg+xml";
+    return "image/png";
+}
+
+// The icon of an entry or group: a custom image ({ image: data URL }), a standard icon ({ standard }) or null
+function iconOf(db, item, defaultIcon) {
+    const uuid = item.customIcon;
+    if (uuid && !uuid.empty) {
+        const custom = db.meta?.customIcons?.get(uuid.id);
+        if (custom?.data && custom.data.byteLength) {
+            const bytes = new Uint8Array(custom.data);
+            return { image: `data:${imageType(bytes)};base64,${b64encode(bytes)}` };
+        }
+    }
+    if (Number.isInteger(item.icon) && item.icon !== defaultIcon && item.icon >= 0 && item.icon < STANDARD_ICON_COUNT) {
+        return { standard: item.icon };
+    }
+    return null;
+}
+
 function hostOf(url) {
     try {
         return new URL(url).hostname;
@@ -321,7 +352,8 @@ function hostOf(url) {
 }
 
 // Convert an opened database to entries ready for import.
-// Returns { entries: [{ view, folderPath, attachments: [{fileName, data}], sourceTitle }], folderPaths, stats, warnings }
+// Returns { entries: [{ view, folderPath, attachments: [{fileName, data}], sourceTitle, icon }], folderPaths,
+// groupIcons: Map(folder path -> icon), stats, warnings }
 export function convertKeePass(db, opts = {}) {
     const options = { ...DEFAULT_OPTIONS, ...opts };
     const root = db.getDefaultGroup();
@@ -332,14 +364,20 @@ export function convertKeePass(db, opts = {}) {
     const resolve = (v) => (resolver ? resolver.resolve(v) : v);
 
     const warnings = [];
-    const stats = { groups: 0, entries: 0, attachments: 0, attachmentBytes: 0, fields: 0, totp: 0, references: 0 };
+    const stats = { groups: 0, entries: 0, attachments: 0, attachmentBytes: 0, fields: 0, totp: 0, references: 0, icons: 0 };
     const folderPaths = new Set();
+    const groupIcons = new Map();
     const entries = [];
 
     for (const group of groups) {
         const path = groupPath(group, root, options);
         if (group !== root) stats.groups++;
         if (path && (options.createEmptyGroups || (group.entries || []).length)) folderPaths.add(path);
+        const groupIcon = options.importIcons && group !== root && path ? iconOf(db, group, DEFAULT_GROUP_ICON) : null;
+        if (groupIcon) {
+            groupIcons.set(path, groupIcon);
+            stats.icons++;
+        }
 
         for (const entry of group.entries || []) {
             stats.entries++;
@@ -422,7 +460,9 @@ export function convertKeePass(db, opts = {}) {
                 stats.attachmentBytes += data.byteLength;
             }
 
-            entries.push({ view, folderPath: path, attachments, sourceTitle: view.name });
+            const entryIcon = options.importIcons ? iconOf(db, entry, DEFAULT_ENTRY_ICON) : null;
+            if (entryIcon) stats.icons++;
+            entries.push({ view, folderPath: path, attachments, sourceTitle: view.name, icon: entryIcon });
         }
     }
 
@@ -432,5 +472,5 @@ export function convertKeePass(db, opts = {}) {
         for (let i = 1; i < parts.length; i++) folderPaths.add(parts.slice(0, i).join(FOLDER_DELIMITER));
     }
 
-    return { entries, folderPaths: [...folderPaths].sort(), stats, warnings, name: db.meta?.name || "" };
+    return { entries, folderPaths: [...folderPaths].sort(), groupIcons, stats, warnings, name: db.meta?.name || "" };
 }

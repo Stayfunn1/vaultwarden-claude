@@ -147,6 +147,31 @@ async function basics(base) {
     await page.locator(".modal button.primary").click();
     await page.screenshot({ path: screenshotPath("04-imported") });
 
+    // KeePass icons
+    const treeRow = (label) => page.locator(".tree-row", { hasText: label });
+    if (!(await treeRow("Internet").count())) await treeRow("KeePass").locator(".tree-caret").click();
+    assert((await treeRow("Internet").locator(".kp-icon").count()) === 1, "imported group icon shown in the tree");
+    await treeRow("Internet").locator(".tree-caret").click();
+    await treeRow("Mail").click();
+    const gmailRow = page.locator(".et-row", { hasText: "Gmail" });
+    assert((await gmailRow.locator(".kp-icon").count()) === 1, "imported entry icon shown in the list");
+    await treeRow("Work").click();
+    assert((await page.locator(".et-row", { hasText: "Jira" }).locator(".img-icon img").count()) === 1, "imported custom icon shown");
+    await page.locator(".et-row", { hasText: "Jira" }).click({ button: "right" });
+    await page.locator(".menu-item", { hasText: "Change icon" }).click();
+    await page.locator(".modal .icon-tile[title='37: Homebanking']").click();
+    await page.screenshot({ path: screenshotPath("05-icon-picker") });
+    await page.locator(".modal button.primary", { hasText: "OK" }).click();
+    await page.waitForFunction(() => document.querySelector(".et-row .kp-icon"));
+    assert((await page.locator(".et-row", { hasText: "Jira" }).locator(".kp-icon").count()) === 1, "icon changed from the context menu");
+    await page.reload();
+    await page.fill("input[type=password]", password);
+    await page.click("button[type=submit]");
+    await page.waitForSelector(".main-view");
+    if (!(await treeRow("Work").count())) await treeRow("KeePass").locator(".tree-caret").click();
+    await treeRow("Work").click();
+    assert((await page.locator(".et-row", { hasText: "Jira" }).locator(".kp-icon").count()) === 1, "changed icon kept after reloading");
+
     assert(errors.length === 0, `no browser errors (${errors.join(" | ")})`);
     await browser.close();
 }

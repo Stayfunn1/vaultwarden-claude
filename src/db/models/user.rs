@@ -387,6 +387,7 @@ impl User {
         TwoFactor::delete_all_by_user(&self.uuid, conn).await?;
         TwoFactorIncomplete::delete_all_by_user(&self.uuid, conn).await?;
         Invitation::take(&self.email, conn).await; // Delete invitation if any
+        super::ManagerIcons::delete_by_owner(&self.uuid, conn).await?;
 
         conn.run(move |conn| {
             diesel::delete(users::table.filter(users::uuid.eq(self.uuid))).execute(conn).map_res("Error deleting user")

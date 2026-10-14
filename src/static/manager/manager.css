@@ -1489,3 +1489,48 @@ kbd {
     max-height: 50vh;
     overflow: auto;
 }
+
+/* ----- Icons ----- */
+
+.img-icon img {
+    width: 16px;
+    height: 16px;
+    object-fit: contain;
+    display: block;
+}
+
+.entry-icon-btn {
+    padding: 2px 4px;
+}
+
+.icon-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, 30px);
+    gap: 3px;
+}
+
+.icon-tile {
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border-light);
+    background: var(--panel);
+}
+
+.icon-tile:hover {
+    background: var(--hover);
+    border-color: var(--sel-border);
+}
+
+.icon-tile.selected {
+    background: var(--sel);
+    border-color: var(--sel-focus);
+}
+
+.icon-tile.add {
+    font-size: 16px;
+    color: var(--muted);
+}

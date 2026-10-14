@@ -30,6 +30,8 @@ import { EntryTable, COLUMNS, typeIcon } from "./table.js";
 import { editEntryDialog } from "./editor.js";
 import { generatorDialog, importKeePassDialog, shareDialog, collectionsDialog, settingsDialog, shortcutsDialog } from "./dialogs.js";
 import { newOrganizationDialog, organizationDialog, collectionAccessDialog, pendingConfirmations } from "./orgs.js";
+import { IconStore } from "./iconstore.js";
+import { renderIcon, faviconIcon, iconPickerDialog } from "./kpicons.js";
 
 const SESSION_KEY = "vwm.session";
 // Card, identity and SSH key values which are treated like passwords
@@ -542,6 +544,7 @@ class App {
 
     lock() {
         if (!this.vault.userKey) return;
+        this.icons = null;
         closeMenus();
         // Close open dialogs, their data is about to be wiped
         closeAllDialogs();
@@ -593,10 +596,89 @@ class App {
         } catch {
             this.lastRevision = null;
         }
+        this.icons = new IconStore(this.vault);
+        await this.loadIcons();
         this.buildMain();
         await this.loadTreeState();
         this.refresh();
         this.checkPendingConfirmations();
+    }
+
+    // ----- Icons -----------------------------------------------------------------------------------
+
+    async loadIcons() {
+        if (!this.icons) return;
+        try {
+            await this.icons.load();
+        } catch (e) {
+            // An older server without the icon storage, or no connection: the default icons are shown
+            console.warn("Unable to load the icons", e);
+        }
+    }
+
+    // The icon of an entry: its own icon, else the website icon (when enabled), else the default icon of its type
+    entryIcon(v) {
+        const own = this.icons?.itemIcon(v);
+        if (own) return renderIcon(own, typeIcon(v));
+        if (settings.websiteIcons && v.login?.uris?.length && !v.deletedDate) {
+            try {
+                const host = new URL(v.login.uris[0].uri).hostname;
+                if (host) return faviconIcon(host, typeIcon(v));
+            } catch {
+                /* not a URL */
+            }
+        }
+        return null;
+    }
+
+    groupIcon(node) {
+        if (!this.icons) return null;
+        let own = null;
+        if (node.kind === "folder" && node.folderIds?.length) own = this.icons.groupIcon(node.folderIds[0], null);
+        else if (node.kind === "collection" && node.collectionIds?.length) own = this.icons.groupIcon(node.collectionIds[0], node.orgId);
+        return own ? renderIcon(own, "folder") : null;
+    }
+
+    // Lets the user choose an icon. Returns the choice for IconStore.apply or undefined.
+    async chooseIcon(title, organizationId, current) {
+        if (!this.icons?.canEdit(organizationId)) {
+            await alertDialog(title, "Only managers, admins and owners of the organization can change its icons.");
+            return undefined;
+        }
+        const choice = await iconPickerDialog(title, current, this.icons.customImages(organizationId));
+        if (!choice) return undefined;
+        return choice.reset ? null : choice;
+    }
+
+    async changeEntryIcons(list = this.selected) {
+        list = list.filter((v) => !v.deletedDate);
+        if (!list.length) return;
+        const orgIds = new Set(list.map((v) => v.organizationId || null));
+        if (orgIds.size > 1) return alertDialog("Change icon", "Select entries of one vault or organization only.");
+        const orgId = [...orgIds][0];
+        const choice = await this.chooseIcon(list.length > 1 ? `Icon of ${list.length} entries` : "Icon", orgId, this.icons?.itemIcon(list[0]));
+        if (choice === undefined) return;
+        try {
+            await this.icons.apply(list.map((v) => ({ organizationId: orgId, kind: "item", id: v.id, icon: choice })));
+        } catch (e) {
+            return alertDialog("Change icon", e.message || String(e));
+        }
+        this.refresh();
+    }
+
+    async changeGroupIcon(node) {
+        const isFolder = node.kind === "folder";
+        const id = isFolder ? node.folderIds?.[0] : node.collectionIds?.[0];
+        if (!id) return;
+        const orgId = isFolder ? null : node.orgId;
+        const choice = await this.chooseIcon(`Icon of ${node.label}`, orgId, this.icons?.groupIcon(id, orgId));
+        if (choice === undefined) return;
+        try {
+            await this.icons.apply([{ organizationId: orgId, kind: "group", id, icon: choice }]);
+        } catch (e) {
+            return alertDialog("Change icon", e.message || String(e));
+        }
+        this.refresh();
     }
 
     // ----- Organizations ---------------------------------------------------------------------------
@@ -718,6 +800,7 @@ class App {
                 this.refreshEntries(false);
             },
             onContext: (node, x, y) => showMenu(this.groupMenuItems(node), x, y),
+            groupIcon: (node) => this.groupIcon(node),
             canDrop: (node, dt) => this.canDrop(node, dt),
             onDrop: (node, dt) => this.handleDrop(node, dt),
             onDragStartNode: (node) => (this._dragNode = node),
@@ -733,6 +816,7 @@ class App {
             onContext: (x, y) => showMenu(this.entryMenuItems(), x, y),
             onHeaderContext: (x, y) => showMenu([{ label: "Columns", submenu: this.columnMenuItems() }], x, y),
             onCellDblClick: (v, col) => this.onCellDblClick(v, col),
+            entryIcon: (v) => this.entryIcon(v),
         });
         clipboardState.onTick = (left) => {
             this.clipStatus = left ? `Clipboard is cleared in ${left}s` : "";
@@ -989,6 +1073,7 @@ class App {
                 "-",
                 { label: one?.favorite ? "Remove from favorites" : "Add to favorites", icon: "star", action: () => this.toggleFavorite(), disabled: !sel.length },
                 { label: "Move to folder…", icon: "folder", action: () => this.moveToFolderDialog(), disabled: !sel.length },
+                { label: "Change icon…", action: () => this.changeEntryIcons(), disabled: !sel.length || !this.icons },
                 { label: "Move to organization…", icon: "org", action: () => this.shareEntries(), disabled: !anyPersonal || !this.vault.organizations.size },
                 { label: "Collections…", icon: "collection", action: () => this.editCollections(), disabled: orgIds.size !== 1 || sel.some((v) => !v.organizationId) },
             );
@@ -1009,6 +1094,7 @@ class App {
                 { label: "Add sub folder…", icon: "add", shortcut: "Insert", action: () => this.addGroup(node) },
                 { label: "Rename folder…", icon: "edit", shortcut: "F2", action: () => this.renameGroup(node), disabled: node.kind !== "folder" },
                 { label: "Move folder to…", icon: "folder", action: () => this.moveGroupDialog(node), disabled: node.kind !== "folder" },
+                { label: "Change icon…", action: () => this.changeGroupIcon(node), disabled: node.kind !== "folder" || !node.folderIds?.length },
                 { label: "Delete folder…", icon: "del", shortcut: "Del", action: () => this.deleteGroup(node), disabled: node.kind !== "folder" },
                 "-",
                 { label: "Add entry here", icon: "login", action: () => this.addEntry(CipherType.Login) },
@@ -1017,6 +1103,7 @@ class App {
             items.push(
                 { label: "Add sub collection…", icon: "add", shortcut: "Insert", action: () => this.addGroup(node) },
                 { label: "Rename collection…", icon: "edit", shortcut: "F2", action: () => this.renameGroup(node), disabled: node.kind !== "collection" || node.virtual },
+                { label: "Change icon…", action: () => this.changeGroupIcon(node), disabled: node.kind !== "collection" || !node.collectionIds?.length || !this.icons?.canEdit(node.orgId) },
                 { label: "Delete collection…", icon: "del", shortcut: "Del", action: () => this.deleteGroup(node), disabled: node.kind !== "collection" },
                 "-",
                 { label: "Collection access…", icon: "user", action: () => this.collectionAccess(node.collectionIds[0]), disabled: node.kind !== "collection" || !node.collectionIds?.length || !this.vault.canManageOrg(node.orgId) },
@@ -1059,6 +1146,10 @@ class App {
             { label: "Show entries of sub folders", checked: settings.showSubfolderEntries, action: () => {
                 settings.showSubfolderEntries = !settings.showSubfolderEntries;
                 this.refreshEntries();
+            } },
+            { label: "Show website icons", checked: !!settings.websiteIcons, action: () => {
+                settings.websiteIcons = !settings.websiteIcons;
+                this.table.renderRows(true);
             } },
             { label: "Show entry details", checked: settings.showDetails, action: () => {
                 settings.showDetails = !settings.showDetails;
@@ -1198,7 +1289,7 @@ class App {
             }
             grid.append(h("span", { class: "dl" }, label), h("span", { class: "dvw" }, val, opts.noCopy ? "" : this.copyButton(() => copyText(value, label))));
         };
-        el.appendChild(h("div", { class: "details-title" }, icon(typeIcon(v)), h("span", null, v.name || "(no title)"), v.favorite ? icon("star") : "", h("span", { class: "muted" }, this.groupName(v) ? `  —  ${this.groupName(v)}` : "")));
+        el.appendChild(h("div", { class: "details-title" }, this.entryIcon(v) || icon(typeIcon(v)), h("span", null, v.name || "(no title)"), v.favorite ? icon("star") : "", h("span", { class: "muted" }, this.groupName(v) ? `  —  ${this.groupName(v)}` : "")));
         if (v.decryptError) el.appendChild(h("div", { class: "form-error" }, "Parts of this item could not be decrypted."));
         if (v.login) {
             add("User name", v.login.username);
@@ -1789,7 +1880,10 @@ class App {
         let applied = false;
         try {
             applied = await this.vault.sync((d, t) => prog?.update("Decrypting", d, t), { background: silent });
-            if (applied) this.lastRevision = await revision;
+            if (applied) {
+                this.lastRevision = await revision;
+                await this.loadIcons();
+            }
             if (!silent) toast("Vault synchronized", "ok", 1500);
         } catch (e) {
             if (!silent) alertDialog("Synchronization failed", e.message);

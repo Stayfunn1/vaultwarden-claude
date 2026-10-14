@@ -230,7 +230,7 @@ export class TreeView {
                 title: node.virtual ? `${node.path} (implicit folder, created when needed)` : node.path || node.label,
             },
             caret,
-            icon(iconName),
+            this.h.groupIcon?.(node) || icon(iconName),
             h("span", { class: "tree-label" }, node.label),
             count ? h("span", { class: "tree-count" }, String(count)) : "",
         );
