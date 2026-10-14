@@ -29,7 +29,7 @@ An alternative server implementation of the Bitwarden Client API, written in Rus
 ## Additions in this fork
 
 **Installation: see [docs/INSTALL.md](docs/INSTALL.md)** (build the image, Docker Compose with HTTPS, KeePass import,
-Bitwarden apps, SSO only, backups and updates).
+Bitwarden apps, SSO only, Keycloak, backups and updates).
 
  * **Web manager** at `/manager/`: a compact, KeePass 2 style vault manager for large vaults, with a real folder
    tree (drag & drop, renaming and moving whole folder trees, cleanup tools), a dense entry list, KeePass keyboard
@@ -41,6 +41,13 @@ Bitwarden apps, SSO only, backups and updates).
  * **Stricter SSO only mode**: with `SSO_ONLY=true` master passwords can not be used against the server at all
    (no password logins, no password registration, no password based 2FA e-mails), optionally also no API key logins
    (`SSO_ONLY_ALLOW_API_KEY=false`). See [docs/sso-only.md](docs/sso-only.md).
+ * **Permissions**: who may use Vaultwarden and who may create organizations, on the admin page or from identity
+   provider groups (`SSO_ACCESS_GROUPS`, `SSO_ORG_CREATION_GROUPS`). See [docs/permissions.md](docs/permissions.md).
+ * **Keycloak groups and directory sync**: organization memberships, roles and groups follow groups like
+   `/vaultwarden/Family/admins` (`SSO_ORG_SYNC`), and a scheduled sync creates accounts for new users and disables
+   the accounts of users who left. See [docs/keycloak.md](docs/keycloak.md).
+ * **Organizations in the web manager**: create organizations, invite and confirm members, roles, groups and
+   collection access; KeePass icons for entries, folders and collections; dark mode.
  * Guide for sharing with organizations, collections and groups: [docs/sharing.md](docs/sharing.md).
 
 <br>

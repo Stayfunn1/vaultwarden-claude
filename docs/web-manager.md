@@ -28,8 +28,8 @@ This is verified with the official Bitwarden CLI.
 * The vault locks after 15 minutes of inactivity (Tools → Options) and on <kbd>Ctrl</kbd>+<kbd>L</kbd>.
   Reloading the page also locks it; logging in again is only needed after logging out.
 
-New accounts first need to be set up once in the Bitwarden web vault or an app (to choose the master
-password); after that the manager can be used.
+New accounts created by single sign-on (or by the Keycloak directory sync) choose their master password
+at their first SSO login in the manager, like in the Bitwarden apps.
 
 ## Migrating from KeePass
 
@@ -59,6 +59,7 @@ What is imported, and how:
 | Field references `{REF:U@I:…}`                 | Replaced by the referenced value (Bitwarden has no references)          |
 | Recycle bin                                    | Skipped (optional)                                                       |
 | Group names containing `/`                     | `/` is replaced by `∕`, otherwise it would create extra nesting         |
+| Icons of entries and groups (standard and custom) | Icons in the manager (optional), see [Icons](#icons)                 |
 
 Bitwarden limits notes to about 7,500 characters and custom fields to a few thousand. Longer values
 are not cut off: they are stored completely as a `.txt` attachment (e.g. `notes.txt`) and the note
@@ -93,6 +94,45 @@ The manager treats the tree as a real tree:
 
 Organizations appear below your own folders with their collections. Dragging personal entries onto
 a collection moves them into the organization (see [sharing.md](sharing.md)).
+
+## Organizations
+
+The **Organizations** menu creates organizations (*New organization…*, if you are allowed to, see
+[permissions.md](permissions.md)) and opens the ones you manage as owner or admin:
+
+* **Members**: invite people by e-mail address, choose their role, **confirm** members who accepted
+  their invitation (this gives them the organization key, encrypted with their own key), revoke,
+  restore and remove them. A notice in the status bar shows members waiting for confirmation.
+* **Groups** (with `ORG_GROUPS_ENABLED=true`): create, rename and delete groups and choose their members.
+* **Collections**: decide which groups and members see a collection, with Bitwarden's permission levels
+  (*Can view*, *Can view, except passwords*, *Can edit*, *Can edit, except passwords*, *Can manage*).
+  The same dialog opens with *Collection access…* in the context menu of a collection.
+
+Memberships and groups that follow your identity provider (`SSO_ORG_SYNC`, see [keycloak.md](keycloak.md))
+are marked *synced*; their role is managed there.
+
+## Icons
+
+Entries, folders and collections can have their own icon, like in KeePass:
+
+* The KeePass import takes over the icons of entries and groups: the 69 standard icons (shown with
+  matching [Lucide](https://lucide.dev) icons, as the KeePass images can not be redistributed) and
+  custom icons (the original images).
+* *Change icon…* in the context menu of entries (also several at once), folders and collections, or the
+  icon button next to the title in the entry editor. Pick a standard icon, a custom icon, add an image,
+  or go back to the default icon.
+* *View → Show website icons* shows the icon of the website of logins without their own icon, from the
+  icon service of Vaultwarden (off by default, as it requests the icons through the server).
+
+The Bitwarden apps have no icons for items and would drop unknown data when saving an item, so the
+icons are stored next to the vault: one document for your own vault and one per organization, encrypted
+with your key or the organization key in the browser. Everyone with access to an organization sees its
+icons; managers, admins and owners can change them.
+
+## Dark mode
+
+The sun/moon button in the toolbar (and on the login page) switches between light and dark.
+*View → Theme* also offers *Follow system*, the default.
 
 ## Keyboard shortcuts
 

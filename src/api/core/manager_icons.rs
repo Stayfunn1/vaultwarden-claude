@@ -19,7 +19,7 @@ use crate::{
     },
 };
 
-/// Larger documents are refused (the custom images are small PNGs, so this leaves room for thousands of them)
+/// Larger documents are refused (custom icons are small PNG images, so this leaves room for thousands of them)
 const MAX_DATA_LEN: usize = 8 * 1024 * 1024;
 
 pub fn routes() -> Vec<rocket::Route> {

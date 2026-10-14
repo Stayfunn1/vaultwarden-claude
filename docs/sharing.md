@@ -21,7 +21,11 @@ ORG_GROUPS_ENABLED=true
 
 ## Setting it up
 
-In the Bitwarden web vault (`https://<your-domain>/`):
+In the web manager (`https://<your-domain>/manager/`), see [web-manager.md](web-manager.md#organizations):
+*Organizations → New organization…*, then *Organizations → <name>…* to invite and confirm members,
+create groups and give them access to collections.
+
+Or in the Bitwarden web vault (`https://<your-domain>/`):
 
 1. **New organization** (any plan name, everything is free on Vaultwarden).
 2. *Admin Console → Members → Invite member*. With `SSO_ONLY=true` invited people join by logging in
@@ -43,9 +47,16 @@ below your own folders:
   use *Collections…* to put an entry in several collections.
 * Add, rename (<kbd>F2</kbd>) and delete collections from the tree (requires the *manage* permission).
   Renaming a collection renames its sub collections too.
-* *Manage members and groups…* in the context menu of an organization opens the Admin Console.
+* *Manage organization…* in the context menu of an organization opens its members, groups and
+  collections; *Collection access…* on a collection decides who sees it.
 * A KeePass database can be imported directly into an organization: the KeePass groups become nested
   collections. This is a quick way to share a team KeePass database.
+
+## Organizations from Keycloak groups
+
+With an identity provider, memberships, roles and groups can follow its groups (for example
+`/vaultwarden/Family/admins`), and only selected people may create organizations. See
+[keycloak.md](keycloak.md) and [permissions.md](permissions.md).
 
 ## Adding passwords automatically ("pushing" from scripts)
 
