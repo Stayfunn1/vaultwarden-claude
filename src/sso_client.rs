@@ -63,6 +63,8 @@ pub type RefreshTokenResponse = (Option<String>, String, Option<Duration>, Optio
 pub struct Client {
     pub http_client: OidcHttpClient,
     pub core_client: CustomClient,
+    /// The issuer exactly as announced by the provider (part of the SSO user identifiers)
+    pub issuer: String,
 }
 
 #[derive(Clone)]
@@ -126,6 +128,7 @@ impl Client {
             .token_endpoint_auth_methods_supported()
             .map(|v| v.iter().map(ToOwned::to_owned).collect());
 
+        let issuer = provider_metadata.issuer().as_str().to_owned();
         let mut base_client = CoreClient::from_provider_metadata(provider_metadata, client_id, Some(client_secret));
 
         if let Some(am) = auth_methods {
@@ -158,6 +161,7 @@ impl Client {
         Ok(Client {
             http_client,
             core_client,
+            issuer,
         })
     }
 
@@ -284,6 +288,39 @@ impl Client {
         match self.core_client.user_info(access_token, None).request_async(&self.http_client).await {
             Err(err) => err!(format!("Request to user_info endpoint failed: {err}")),
             Ok(user_info) => Ok(user_info),
+        }
+    }
+
+    /// Access token of the service account of the client (client credentials grant), for the directory sync
+    pub async fn service_account_token(&self) -> ApiResult<String> {
+        match self.core_client.exchange_client_credentials().request_async(&self.http_client).await {
+            Ok(token_response) => Ok(token_response.access_token().secret().clone()),
+            Err(err) => err!(format!("Unable to get a token for the service account of the client: {err:?}")),
+        }
+    }
+
+    /// GET request with a bearer token, answered with JSON
+    pub async fn get_json(&self, url: &str, access_token: &str) -> ApiResult<serde_json::Value> {
+        let res = match self
+            .http_client
+            .client
+            .get(url)
+            .bearer_auth(access_token)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .send()
+            .await
+        {
+            Ok(res) => res,
+            Err(err) => err!(format!("Request to {url} failed: {err}")),
+        };
+        let status = res.status();
+        if !status.is_success() {
+            let body = res.text().await.unwrap_or_default();
+            err!(format!("Request to {url} failed: HTTP {status} {}", body.chars().take(200).collect::<String>()))
+        }
+        match res.json().await {
+            Ok(value) => Ok(value),
+            Err(err) => err!(format!("Invalid JSON from {url}: {err}")),
         }
     }
 

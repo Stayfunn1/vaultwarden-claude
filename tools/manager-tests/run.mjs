@@ -6,7 +6,7 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const DEFAULT_SUITES = ["interop", "keepass-import", "regressions", "ui", "sso", "sso-groups"];
+const DEFAULT_SUITES = ["interop", "keepass-import", "regressions", "ui", "sso", "sso-groups", "sso-directory"];
 
 if (!process.env.VWM_TESTS_CHILD) {
     // Node only reads NODE_EXTRA_CA_CERTS at startup, so create the certificate first and run the tests in a child process

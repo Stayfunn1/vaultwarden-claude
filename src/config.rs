@@ -832,6 +832,14 @@ make_config! {
         sso_org_sync:                   bool,   true,   def,    false;
         /// Organization sync prefix |> The first part of the group names used by the organization sync
         sso_org_sync_prefix:            String, true,   def,    "vaultwarden".to_owned();
+        /// Keycloak directory sync schedule |> Cron schedule (with seconds) of the Keycloak directory sync, e.g. `0 */15 * * * *`. Empty disables the schedule. Changes need a restart
+        sso_directory_sync_schedule:    String, true,   def,    String::new();
+        /// Keycloak admin API URL |> The admin REST API of the realm, e.g. `https://keycloak.example.com/admin/realms/main`. Derived from the authority when empty
+        sso_directory_sync_url:         String, true,   def,    String::new();
+        /// Directory sync creates accounts |> Create accounts for new Keycloak users (with access) before their first login, so they can be added to organizations
+        sso_directory_sync_create_users: bool,  true,   def,    true;
+        /// Directory sync disables accounts |> Disable the accounts of users which are disabled in or removed from Keycloak, and enable them again when they return
+        sso_directory_sync_disable_users: bool, true,   def,    true;
         /// Allow SSO flow to create account |> You probably want to disable it when using a public provider
         sso_signups_allowed:            bool,   true,   def,    true;
         /// Allow email association |> Associate existing non-SSO user based on email
@@ -1125,6 +1133,17 @@ fn validate_config(cfg: &ConfigItems, on_update: bool) -> Result<(), Error> {
         validate_internal_sso_issuer_url(&cfg.sso_authority)?;
         validate_internal_sso_redirect_url(&cfg.sso_callback_path)?;
         validate_sso_master_password_policy(cfg.sso_master_password_policy.as_ref())?;
+    }
+
+    if !cfg.sso_directory_sync_schedule.trim().is_empty()
+        && cfg.sso_directory_sync_schedule.parse::<Schedule>().is_err()
+    {
+        err!(
+            "`SSO_DIRECTORY_SYNC_SCHEDULE` is not a valid cron schedule (sec min hour day month weekday), e.g. `0 */15 * * * *`"
+        )
+    }
+    if !cfg.sso_directory_sync_url.is_empty() && !cfg.sso_directory_sync_url.starts_with("http") {
+        err!("`SSO_DIRECTORY_SYNC_URL` must be an http(s) URL")
     }
 
     if cfg._enable_yubico {

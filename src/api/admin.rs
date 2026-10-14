@@ -71,6 +71,8 @@ pub fn routes() -> Vec<Route> {
         get_diagnostics_config,
         resend_user_invite,
         get_diagnostics_http,
+        get_directory_sync,
+        post_directory_sync,
     ]
 }
 
@@ -343,6 +345,23 @@ async fn test_smtp(data: Json<InviteData>, _token: AdminToken) -> EmptyResult {
     } else {
         err!("Mail is not enabled")
     }
+}
+
+/// Status of the Keycloak directory sync
+#[get("/sso/directory-sync")]
+fn get_directory_sync(_token: AdminToken) -> Json<Value> {
+    Json(json!({
+        "enabled": CONFIG.sso_enabled(),
+        "schedule": CONFIG.sso_directory_sync_schedule(),
+        "lastRun": crate::sso_directory::last_run(),
+    }))
+}
+
+/// Runs the Keycloak directory sync now
+#[post("/sso/directory-sync", format = "application/json")]
+async fn post_directory_sync(_token: AdminToken, conn: DbConn) -> JsonResult {
+    let report = crate::sso_directory::run(&conn).await?;
+    Ok(Json(json!(report)))
 }
 
 #[get("/logout")]

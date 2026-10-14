@@ -60,6 +60,7 @@ mod mail;
 mod ratelimit;
 mod sso;
 mod sso_client;
+mod sso_directory;
 mod sso_groups;
 mod storage;
 mod util;
@@ -741,6 +742,13 @@ fn schedule_jobs(pool: db::DbPool) {
             if !CONFIG.purge_incomplete_sso_auth().is_empty() {
                 sched.add(Job::new(CONFIG.purge_incomplete_sso_auth().parse().unwrap(), || {
                     runtime.spawn(db::models::SsoAuth::delete_expired(pool.clone()));
+                }));
+            }
+
+            // Keycloak directory sync
+            if CONFIG.sso_enabled() && !CONFIG.sso_directory_sync_schedule().trim().is_empty() {
+                sched.add(Job::new(CONFIG.sso_directory_sync_schedule().trim().parse().unwrap(), || {
+                    runtime.spawn(sso_directory::sync_job(pool.clone()));
                 }));
             }
 

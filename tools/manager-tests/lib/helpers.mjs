@@ -248,3 +248,30 @@ export async function managerLogin(page, base, email, password) {
     await page.fill("input[type=password]", password);
     await page.click("button[type=submit]");
 }
+
+// Logs in to the admin page. Returns a function for admin API requests: (method, path, body) => { status, body }
+export async function adminSession(base, token) {
+    const res = await fetch(`${base}/admin`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ token }),
+        redirect: "manual",
+    });
+    const cookie = res.headers.getSetCookie().map((c) => c.split(";")[0]).find((c) => c.startsWith("VW_ADMIN="));
+    if (!cookie) throw new Error(`admin login failed: ${res.status}`);
+    return async (method, path, body) => {
+        const r = await fetch(`${base}/admin${path}`, {
+            method,
+            headers: { Cookie: cookie, "Content-Type": "application/json", Accept: "application/json" },
+            body: body === undefined ? undefined : JSON.stringify(body),
+        });
+        const text = await r.text();
+        let parsed = text;
+        try {
+            parsed = JSON.parse(text);
+        } catch {
+            /* not JSON */
+        }
+        return { status: r.status, body: parsed };
+    };
+}

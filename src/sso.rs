@@ -243,7 +243,7 @@ pub async fn authorize_url(
 pub struct OIDCIdentifier(String);
 
 impl OIDCIdentifier {
-    fn new(issuer: &str, subject: &str) -> Self {
+    pub fn new(issuer: &str, subject: &str) -> Self {
         OIDCIdentifier(format!("{issuer}/{subject}"))
     }
 }

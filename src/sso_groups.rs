@@ -32,7 +32,7 @@ pub fn enabled() -> bool {
         || CONFIG.sso_org_sync()
 }
 
-fn clean(group: &str) -> String {
+pub fn clean(group: &str) -> String {
     group.trim().trim_matches('/').trim().to_owned()
 }
 
