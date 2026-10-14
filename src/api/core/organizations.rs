@@ -183,7 +183,7 @@ struct BulkMembershipIds {
 
 #[post("/organizations", data = "<data>")]
 async fn create_organization(headers: Headers, data: Json<OrgData>, conn: DbConn) -> JsonResult {
-    if !CONFIG.is_org_creation_allowed(&headers.user.email) {
+    if !crate::sso_groups::can_create_org(&headers.user, &conn).await {
         err!("User not allowed to create organizations")
     }
     if OrgPolicy::is_applicable_to_user(&headers.user.uuid, OrgPolicyType::SingleOrg, None, &conn).await {

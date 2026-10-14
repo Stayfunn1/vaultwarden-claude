@@ -41,6 +41,7 @@
     --icon-user: #9cc3e5;
     --icon-link: #0063b1;
     --icon-lock: #f2c94c;
+    --icon-moon: #5a6b8c;
     color-scheme: light;
 }
 
@@ -70,6 +71,10 @@
         --icon-add: #3fbf3f;
         --icon-del: #ff6b5b;
         --icon-link: #4aa3ff;
+        --icon-moon: #c9d4ea;
+        --ok: #6ccb5f;
+        --warn: #f0b45a;
+        --danger: #ff8a80;
         color-scheme: dark;
     }
 }
@@ -99,6 +104,10 @@
     --icon-add: #3fbf3f;
     --icon-del: #ff6b5b;
     --icon-link: #4aa3ff;
+    --icon-moon: #c9d4ea;
+    --ok: #6ccb5f;
+    --warn: #f0b45a;
+    --danger: #ff8a80;
     color-scheme: dark;
 }
 
@@ -186,9 +195,10 @@ button.primary:hover:not(:disabled) {
     background: var(--accent);
 }
 
+/* The same strong red in both themes, white text stays readable */
 button.danger.primary {
-    background: var(--danger);
-    border-color: var(--danger);
+    background: #c42b1c;
+    border-color: #c42b1c;
 }
 
 .wide {
@@ -243,12 +253,19 @@ a {
 }
 
 .auth-box {
+    position: relative;
     background: var(--panel);
     border: 1px solid var(--border);
     box-shadow: var(--shadow);
     padding: 24px 28px;
     width: 380px;
     max-width: 100%;
+}
+
+.auth-theme {
+    position: absolute;
+    top: 6px;
+    right: 6px;
 }
 
 .auth-logo {
@@ -1363,4 +1380,157 @@ kbd {
     .form-label {
         width: 80px;
     }
+}
+
+/* ----- Organizations ----- */
+
+.status-notice {
+    border: none;
+    background: none;
+    color: var(--warn);
+    font: inherit;
+    cursor: pointer;
+    padding: 0 8px;
+}
+
+.status-notice:hover {
+    text-decoration: underline;
+}
+
+.org-dialog {
+    display: flex;
+    flex-direction: column;
+    min-height: 360px;
+    max-height: 70vh;
+}
+
+.org-tab-body {
+    min-height: 300px;
+}
+
+.org-status {
+    min-height: 18px;
+    padding-top: 4px;
+}
+
+.org-invite {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+.org-invite input {
+    flex: 1;
+}
+
+.org-notice {
+    color: var(--warn);
+}
+
+.org-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.org-table th {
+    text-align: left;
+    font-weight: normal;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    padding: 3px 6px;
+}
+
+.org-table td {
+    border-bottom: 1px solid var(--border-light);
+    padding: 3px 6px;
+    vertical-align: middle;
+}
+
+.org-table tr.revoked td {
+    color: var(--muted);
+}
+
+.org-actions {
+    text-align: right;
+    white-space: nowrap;
+}
+
+.org-actions button + button {
+    margin-left: 4px;
+}
+
+.member-status.status-1 {
+    color: var(--warn);
+    font-weight: 600;
+}
+
+.member-status.status--1 {
+    color: var(--danger);
+}
+
+.member-status.status-2 {
+    color: var(--ok);
+}
+
+.tag {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 0 5px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    font-size: 10px;
+    color: var(--muted);
+}
+
+.check-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    max-height: 50vh;
+    overflow: auto;
+}
+
+/* ----- Icons ----- */
+
+.img-icon img {
+    width: 16px;
+    height: 16px;
+    object-fit: contain;
+    display: block;
+}
+
+.entry-icon-btn {
+    padding: 2px 4px;
+}
+
+.icon-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, 30px);
+    gap: 3px;
+}
+
+.icon-tile {
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border-light);
+    background: var(--panel);
+}
+
+.icon-tile:hover {
+    background: var(--hover);
+    border-color: var(--sel-border);
+}
+
+.icon-tile.selected {
+    background: var(--sel);
+    border-color: var(--sel-focus);
+}
+
+.icon-tile.add {
+    font-size: 16px;
+    color: var(--muted);
 }

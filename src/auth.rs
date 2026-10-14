@@ -1365,12 +1365,17 @@ pub async fn refresh_tokens(
         err!("Impossible to find user")
     };
 
+    // SSO_ACCESS_GROUPS: refreshes which do not ask the identity provider check the stored groups
+    if !matches!(refresh_claims.sub, AuthMethod::Sso) || CONFIG.sso_auth_only_not_session() {
+        crate::sso_groups::check_stored_access(&user, conn).await?;
+    }
+
     let auth_tokens = match refresh_claims.sub {
         AuthMethod::Sso if CONFIG.sso_enabled() && CONFIG.sso_auth_only_not_session() => {
             AuthTokens::new(&device, &user, refresh_claims.sub, client_id)
         }
         AuthMethod::Sso if CONFIG.sso_enabled() => {
-            sso::exchange_refresh_token(&device, &user, client_id, refresh_claims).await?
+            sso::exchange_refresh_token(&device, &user, client_id, refresh_claims, conn).await?
         }
         AuthMethod::Sso => err!("SSO is now disabled, Login again using email and master password"),
         AuthMethod::Password if CONFIG.sso_enabled() && CONFIG.sso_only() => err!("SSO is now required, Login again"),

@@ -56,12 +56,15 @@ pub type CustomClient = openidconnect::Client<
     EndpointSet,
 >;
 
-pub type RefreshTokenResponse = (Option<String>, String, Option<Duration>);
+/// (refresh token, access token, expires in, id token)
+pub type RefreshTokenResponse = (Option<String>, String, Option<Duration>, Option<String>);
 
 #[derive(Clone)]
 pub struct Client {
     pub http_client: OidcHttpClient,
     pub core_client: CustomClient,
+    /// The issuer exactly as announced by the provider (part of the SSO user identifiers)
+    pub issuer: String,
 }
 
 #[derive(Clone)]
@@ -125,6 +128,7 @@ impl Client {
             .token_endpoint_auth_methods_supported()
             .map(|v| v.iter().map(ToOwned::to_owned).collect());
 
+        let issuer = provider_metadata.issuer().as_str().to_owned();
         let mut base_client = CoreClient::from_provider_metadata(provider_metadata, client_id, Some(client_secret));
 
         if let Some(am) = auth_methods {
@@ -157,6 +161,7 @@ impl Client {
         Ok(Client {
             http_client,
             core_client,
+            issuer,
         })
     }
 
@@ -286,6 +291,73 @@ impl Client {
         }
     }
 
+    /// Access token of the service account of the client (client credentials grant), for the directory sync
+    pub async fn service_account_token(&self) -> ApiResult<String> {
+        match self.core_client.exchange_client_credentials().request_async(&self.http_client).await {
+            Ok(token_response) => Ok(token_response.access_token().secret().clone()),
+            Err(err) => err!(format!("Unable to get a token for the service account of the client: {err:?}")),
+        }
+    }
+
+    /// GET request with a bearer token, answered with JSON
+    pub async fn get_json(&self, url: &str, access_token: &str) -> ApiResult<serde_json::Value> {
+        let res = match self
+            .http_client
+            .client
+            .get(url)
+            .bearer_auth(access_token)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .send()
+            .await
+        {
+            Ok(res) => res,
+            Err(err) => err!(format!("Request to {url} failed: {err}")),
+        };
+        let status = res.status();
+        if !status.is_success() {
+            let body = res.text().await.unwrap_or_default();
+            err!(format!("Request to {url} failed: HTTP {status} {}", body.chars().take(200).collect::<String>()))
+        }
+        match res.json().await {
+            Ok(value) => Ok(value),
+            Err(err) => err!(format!("Invalid JSON from {url}: {err}")),
+        }
+    }
+
+    /// The raw userinfo response, to read claims the typed client does not know (like groups)
+    pub async fn user_info_raw(&self, access_token: &str) -> ApiResult<serde_json::Value> {
+        let url = self.core_client.user_info_url();
+        let res = match self
+            .http_client
+            .client
+            .get(url.url().as_str())
+            .bearer_auth(access_token)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .send()
+            .await
+        {
+            Ok(res) => res,
+            Err(err) => err!(format!("Request to user_info endpoint failed: {err}")),
+        };
+        if !res.status().is_success() {
+            err!(format!("Request to user_info endpoint failed: HTTP {}", res.status()))
+        }
+        let body = match res.text().await {
+            Ok(body) => body,
+            Err(err) => err!(format!("Unable to read the user_info response: {err}")),
+        };
+        // Some providers answer with a signed JWT instead of JSON
+        let value = if body.trim_start().starts_with('{') {
+            serde_json::from_str(&body).ok()
+        } else {
+            crate::sso_groups::jwt_claims(body.trim())
+        };
+        let Some(value) = value else {
+            err!("Unable to parse the user_info response")
+        };
+        Ok(value)
+    }
+
     pub async fn check_validity(access_token: String) -> EmptyResult {
         let client = Client::cached().await?;
         match client.user_info(AccessToken::new(access_token)).await {
@@ -332,6 +404,7 @@ impl Client {
                 token_response.refresh_token().map(|token| token.secret().clone()),
                 token_response.access_token().secret().clone(),
                 token_response.expires_in(),
+                token_response.extra_fields().id_token().map(ToString::to_string),
             )),
         }
     }

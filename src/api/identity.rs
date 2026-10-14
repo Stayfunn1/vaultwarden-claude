@@ -201,6 +201,21 @@ async fn sso_login(data: ConnectData, user_id: &mut Option<UserId>, conn: &DbCon
     };
 
     let (sso_auth, user_infos) = sso::exchange_code(code, code_verifier, conn).await?;
+
+    // SSO_ACCESS_GROUPS: only members of the configured identity provider groups may use Vaultwarden
+    if let Err(e) = crate::sso_groups::check_access(user_infos.groups.as_deref()) {
+        // Remember the groups of an already linked user, so a password or API key login is refused too
+        if let Some((user, _)) = SsoUser::find_by_identifier(&user_infos.identifier, conn).await {
+            crate::sso_groups::apply(&user, user_infos.groups.clone(), conn).await.ok();
+        }
+        err!(
+            e.message().to_owned(),
+            format!("IP: {}. Username: {}.", ip.ip, user_infos.email),
+            ErrorEvent {
+                event: EventType::UserFailedLogIn
+            }
+        )
+    }
     let user_with_sso = match SsoUser::find_by_identifier(&user_infos.identifier, conn).await {
         None => match SsoUser::find_by_mail(&user_infos.email, conn).await {
             None => None,
@@ -362,7 +377,11 @@ async fn sso_login(data: ConnectData, user_id: &mut Option<UserId>, conn: &DbCon
     *user_id = Some(user.uuid.clone());
 
     // We passed 2FA get auth tokens
+    let groups = user_infos.groups.clone();
     let auth_tokens = sso::redeem(&device, &user, data.client_id, sso_user, sso_auth, user_infos, conn).await?;
+
+    // Store the groups and sync the organization memberships (the access was already checked above)
+    crate::sso_groups::apply(&user, groups, conn).await?;
 
     authenticated_response(&user, &mut device, auth_tokens, twofactor_token, conn, ip).await
 }
@@ -430,6 +449,17 @@ async fn password_login(data: ConnectData, user_id: &mut Option<UserId>, conn: &
     if !user.enabled {
         err!(
             "This user has been disabled",
+            format!("IP: {}. Username: {log_username}.", ip.ip),
+            ErrorEvent {
+                event: EventType::UserFailedLogIn
+            }
+        )
+    }
+
+    // SSO users removed from the access groups can not fall back to their password
+    if let Err(e) = crate::sso_groups::check_stored_access(&user, conn).await {
+        err!(
+            e.message().to_owned(),
             format!("IP: {}. Username: {log_username}.", ip.ip),
             ErrorEvent {
                 event: EventType::UserFailedLogIn
@@ -643,6 +673,16 @@ async fn user_api_key_login(
     if !user.enabled {
         err!(
             "This user has been disabled (API key login)",
+            format!("IP: {}. Username: {}.", ip.ip, user.email),
+            ErrorEvent {
+                event: EventType::UserFailedLogIn
+            }
+        )
+    }
+
+    if let Err(e) = crate::sso_groups::check_stored_access(&user, conn).await {
+        err!(
+            e.message().to_owned(),
             format!("IP: {}. Username: {}.", ip.ip, user.email),
             ErrorEvent {
                 event: EventType::UserFailedLogIn

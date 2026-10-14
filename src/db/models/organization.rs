@@ -89,7 +89,7 @@ impl MembershipStatus {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, num_derive::FromPrimitive)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, num_derive::FromPrimitive)]
 pub enum MembershipType {
     Owner = 0,
     Admin = 1,
@@ -378,6 +378,7 @@ impl Organization {
         OrgPolicy::delete_all_by_organization(&self.uuid, conn).await?;
         Group::delete_all_by_organization(&self.uuid, conn).await?;
         OrganizationApiKey::delete_all_by_organization(&self.uuid, conn).await?;
+        super::ManagerIcons::delete_by_owner(&self.uuid, conn).await?;
 
         conn.run(move |conn| {
             diesel::delete(organizations::table.filter(organizations::uuid.eq(self.uuid)))

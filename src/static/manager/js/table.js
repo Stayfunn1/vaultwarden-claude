@@ -202,7 +202,7 @@ export class EntryTable {
                 const text = col.value(v, ctx);
                 const cell = h("div", { class: `et-cell et-${key}`, style: { width: `${this.width(key)}px` }, role: "gridcell", dataset: { col: key } });
                 if (key === "name") {
-                    cell.append(icon(typeIcon(v)), h("span", { class: "et-text" }, text || "(no title)"));
+                    cell.append(this.h.entryIcon?.(v) || icon(typeIcon(v)), h("span", { class: "et-text" }, text || "(no title)"));
                     if (v.favorite) cell.appendChild(icon("star", "et-fav"));
                     if (v.organizationId) cell.appendChild(icon("org", "et-shared"));
                 } else {

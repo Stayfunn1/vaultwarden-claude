@@ -34,6 +34,14 @@ Upstream documentation for the SSO feature itself (provider specific settings, t
    once with SSO while `SSO_ONLY=false` (it gets linked by e-mail address), or switch directly to
    `SSO_ONLY=true` with `SSO_SIGNUPS_MATCH_EMAIL=true`. Your vault and master password stay the same.
 
+## Groups: access, organization creation and memberships
+
+The groups (or roles) of your identity provider can decide who may use Vaultwarden
+(`SSO_ACCESS_GROUPS`), who may create organizations (`SSO_ORG_CREATION_GROUPS`) and the organization
+memberships (`SSO_ORG_SYNC`). With Keycloak a scheduled directory sync also creates accounts in advance
+and disables the accounts of people who left. See [keycloak.md](keycloak.md) and
+[permissions.md](permissions.md).
+
 ## Logging in
 
 * Bitwarden apps and browser extension: set the server URL to your domain (self-hosted), then choose

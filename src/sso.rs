@@ -243,7 +243,7 @@ pub async fn authorize_url(
 pub struct OIDCIdentifier(String);
 
 impl OIDCIdentifier {
-    fn new(issuer: &str, subject: &str) -> Self {
+    pub fn new(issuer: &str, subject: &str) -> Self {
         OIDCIdentifier(format!("{issuer}/{subject}"))
     }
 }
@@ -307,6 +307,25 @@ pub async fn exchange_code(
 
     let identifier = OIDCIdentifier::new(id_claims.issuer(), id_claims.subject());
 
+    // Groups (or roles) for the access rules and the organization sync, from the ID token or else the userinfo response
+    let groups = if crate::sso_groups::enabled() {
+        let id_token_claims =
+            token_response.extra_fields().id_token().and_then(|t| crate::sso_groups::jwt_claims(&t.to_string()));
+        match id_token_claims.as_ref().and_then(|c| crate::sso_groups::groups_from_claims(&[c])) {
+            Some(groups) => Some(groups),
+            None => match client.user_info_raw(token_response.access_token().secret()).await {
+                Ok(info) => crate::sso_groups::groups_from_claims(&[&info]),
+                Err(e) => {
+                    warn!("Unable to read the groups from the userinfo response: {e:?}");
+                    None
+                }
+            },
+        }
+    } else {
+        None
+    };
+    debug!("Identity provider groups of {email}: {groups:?}");
+
     let authenticated_user = OIDCAuthenticatedUser {
         refresh_token: refresh_token.cloned(),
         access_token: token_response.access_token().secret().clone(),
@@ -315,6 +334,7 @@ pub async fn exchange_code(
         email: email.clone(),
         email_verified,
         user_name: user_name.clone(),
+        groups,
     };
 
     debug!("Authenticated user {authenticated_user:?}");
@@ -338,10 +358,7 @@ pub async fn redeem(
     sso_auth.delete(conn).await?;
 
     if sso_user.is_none() {
-        let user_sso = SsoUser {
-            user_uuid: user.uuid.clone(),
-            identifier: auth_user.identifier.clone(),
-        };
+        let user_sso = SsoUser::new(user.uuid.clone(), auth_user.identifier.clone());
         user_sso.save(conn).await?;
     }
 
@@ -362,6 +379,23 @@ pub async fn redeem(
 
         create_auth_tokens_impl(device, auth_user.refresh_token, access_claims, auth_user.access_token)
     }
+}
+
+// Checks the access groups again and updates the organization sync on every token refresh, so changes in the
+// identity provider apply within one access token lifetime. Nothing changes when the groups are not sent on refresh.
+async fn refresh_groups(user: &User, id_token: Option<&str>, access_token: &str, conn: &DbConn) -> ApiResult<()> {
+    if !crate::sso_groups::enabled() {
+        return Ok(());
+    }
+    let mut groups =
+        id_token.and_then(crate::sso_groups::jwt_claims).and_then(|c| crate::sso_groups::groups_from_claims(&[&c]));
+    if groups.is_none() {
+        match Client::cached().await?.user_info_raw(access_token).await {
+            Ok(info) => groups = crate::sso_groups::groups_from_claims(&[&info]),
+            Err(e) => warn!("Unable to read the groups from the userinfo response: {e:?}"),
+        }
+    }
+    crate::sso_groups::apply(user, groups, conn).await
 }
 
 // We always return a refresh_token (with no refresh_token some secrets are not displayed in the web front).
@@ -439,13 +473,15 @@ pub async fn exchange_refresh_token(
     user: &User,
     client_id: Option<String>,
     refresh_claims: auth::RefreshJwtClaims,
+    conn: &DbConn,
 ) -> ApiResult<AuthTokens> {
     let exp = refresh_claims.exp;
     match refresh_claims.token {
         Some(TokenWrapper::Refresh(refresh_token)) => {
             // Use new refresh_token if returned
-            let (new_refresh_token, access_token, expires_in) =
+            let (new_refresh_token, access_token, expires_in, id_token) =
                 Client::exchange_refresh_token(refresh_token.clone()).await?;
+            refresh_groups(user, id_token.as_deref(), &access_token, conn).await?;
 
             create_auth_tokens(
                 device,
@@ -465,6 +501,7 @@ pub async fn exchange_refresh_token(
             }
 
             Client::check_validity(access_token.clone()).await?;
+            refresh_groups(user, None, &access_token, conn).await?;
 
             let access_claims = auth::LoginJwtClaims::new(
                 device,

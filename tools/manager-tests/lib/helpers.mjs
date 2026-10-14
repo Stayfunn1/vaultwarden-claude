@@ -47,13 +47,19 @@ async function rsaKeyPair() {
     };
 }
 
-// Registers an account the same way the Bitwarden clients do
-export async function register(base, email, password, kdf = { kdf: 0, kdfIterations: 600000 }) {
+// The keys of a new account, as the Bitwarden clients create them
+async function accountKeys(email, password, kdf) {
     const masterKey = await c.deriveMasterKey(password, email, kdf);
     const hash = await c.hashMasterKey(masterKey, password);
     const userKey = c.SymmetricKey.generate();
-    const encUserKey = await c.encryptBytes(userKey.raw, await c.stretchMasterKey(masterKey));
+    const key = await c.encryptBytes(userKey.raw, await c.stretchMasterKey(masterKey));
     const { pkcs8, spki } = await rsaKeyPair();
+    return { hash, key, keys: { publicKey: c.b64encode(spki), encryptedPrivateKey: await c.encryptBytes(pkcs8, userKey) } };
+}
+
+// Registers an account the same way the Bitwarden clients do
+export async function register(base, email, password, kdf = { kdf: 0, kdfIterations: 600000 }) {
+    const { hash, key, keys } = await accountKeys(email, password, kdf);
     const vres = await fetch(`${base}/identity/accounts/register/send-verification-email`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "text/plain" },
@@ -69,17 +75,81 @@ export async function register(base, email, password, kdf = { kdf: 0, kdfIterati
             name: email.split("@")[0],
             masterPasswordHash: hash,
             masterPasswordHint: null,
-            key: encUserKey,
+            key,
             kdf: kdf.kdf,
             kdfIterations: kdf.kdfIterations,
             kdfMemory: kdf.kdfMemory ?? null,
             kdfParallelism: kdf.kdfParallelism ?? null,
-            keys: { publicKey: c.b64encode(spki), encryptedPrivateKey: await c.encryptBytes(pkcs8, userKey) },
+            keys,
         }),
     });
     if (!res.ok) throw new Error(`register failed ${res.status} ${await res.text()}`);
-    return { publicKey: c.b64encode(spki) };
+    return { publicKey: keys.publicKey };
 }
+
+// Sets the master password of an account created by an SSO login, like the Bitwarden clients do
+export async function setPassword(base, accessToken, email, password, kdf = { kdf: 0, kdfIterations: 600000 }) {
+    const { hash, key, keys } = await accountKeys(email, password, kdf);
+    const res = await fetch(`${base}/api/accounts/set-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ masterPasswordHash: hash, key, keys, kdf: kdf.kdf, kdfIterations: kdf.kdfIterations, orgIdentifier: null }),
+    });
+    if (!res.ok) throw new Error(`set-password failed ${res.status} ${await res.text()}`);
+    return { publicKey: keys.publicKey };
+}
+
+const tokenForm = (form) =>
+    new URLSearchParams({ scope: "api offline_access", client_id: "web", deviceType: "14", deviceIdentifier: crypto.randomUUID(), deviceName: "test", ...form });
+
+async function tokenRequest(base, form) {
+    const res = await fetch(`${base}/identity/connect/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: tokenForm(form),
+    });
+    return { status: res.status, body: await res.json().catch(() => null) };
+}
+
+// Logs in with SSO like a Bitwarden client, without a browser: follows the redirects through the identity provider
+// and redeems the code. Returns { status, body } of the token endpoint.
+export async function ssoToken(base) {
+    const verifier = c.b64urlEncode(crypto.getRandomValues(new Uint8Array(32)));
+    const challenge = Buffer.from(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))).toString("base64url");
+    const redirectUri = `${base}/manager/sso-callback.html`;
+    const params = new URLSearchParams({
+        client_id: "web",
+        redirect_uri: redirectUri,
+        response_type: "code",
+        scope: "api offline_access",
+        state: `${uid()}_test`,
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+        response_mode: "query",
+    });
+    let url = `${base}/identity/connect/authorize?${params}`;
+    // The browser session is bound to the login with a cookie
+    const cookies = new Map();
+    for (let i = 0; i < 6 && !url.startsWith(redirectUri); i++) {
+        const origin = new URL(url).origin;
+        const cookie = [...(cookies.get(origin) || new Map())].map(([k, v]) => `${k}=${v}`).join("; ");
+        const res = await fetch(url, { redirect: "manual", headers: cookie ? { Cookie: cookie } : {} });
+        for (const set of res.headers.getSetCookie()) {
+            const [pair] = set.split(";");
+            const eq = pair.indexOf("=");
+            if (!cookies.has(origin)) cookies.set(origin, new Map());
+            cookies.get(origin).set(pair.slice(0, eq).trim(), pair.slice(eq + 1).trim());
+        }
+        const location = res.headers.get("location");
+        if (!location) throw new Error(`SSO redirect chain stopped at ${url}: ${res.status} ${await res.text()}`);
+        url = new URL(location, url).href;
+    }
+    const code = new URL(url).searchParams.get("code");
+    if (!code) throw new Error(`SSO login returned no code: ${url}`);
+    return tokenRequest(base, { grant_type: "authorization_code", code, code_verifier: verifier, redirect_uri: redirectUri });
+}
+
+export const refreshToken = (base, token) => tokenRequest(base, { grant_type: "refresh_token", refresh_token: token });
 
 // Logs in with the manager's own Api/Vault classes (outside the browser)
 export async function login(base, email, password) {
@@ -177,4 +247,31 @@ export async function managerLogin(page, base, email, password) {
     await page.fill("input[type=email]", email);
     await page.fill("input[type=password]", password);
     await page.click("button[type=submit]");
+}
+
+// Logs in to the admin page. Returns a function for admin API requests: (method, path, body) => { status, body }
+export async function adminSession(base, token) {
+    const res = await fetch(`${base}/admin`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ token }),
+        redirect: "manual",
+    });
+    const cookie = res.headers.getSetCookie().map((c) => c.split(";")[0]).find((c) => c.startsWith("VW_ADMIN="));
+    if (!cookie) throw new Error(`admin login failed: ${res.status}`);
+    return async (method, path, body) => {
+        const r = await fetch(`${base}/admin${path}`, {
+            method,
+            headers: { Cookie: cookie, "Content-Type": "application/json", Accept: "application/json" },
+            body: body === undefined ? undefined : JSON.stringify(body),
+        });
+        const text = await r.text();
+        let parsed = text;
+        try {
+            parsed = JSON.parse(text);
+        } catch {
+            /* not JSON */
+        }
+        return { status: r.status, body: parsed };
+    };
 }

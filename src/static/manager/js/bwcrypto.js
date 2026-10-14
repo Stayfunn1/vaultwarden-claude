@@ -389,6 +389,19 @@ export class RsaPrivateKey {
     }
 }
 
+// A new RSA key pair for an account or an organization: { pkcs8, spki } (DER bytes)
+export async function generateRsaKeyPair() {
+    const kp = await subtle.generateKey(
+        { name: "RSA-OAEP", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-1" },
+        true,
+        ["encrypt", "decrypt"],
+    );
+    return {
+        pkcs8: new Uint8Array(await subtle.exportKey("pkcs8", kp.privateKey)),
+        spki: new Uint8Array(await subtle.exportKey("spki", kp.publicKey)),
+    };
+}
+
 export async function rsaEncrypt(data, publicKeySpkiB64) {
     const key = await subtle.importKey("spki", b64decode(publicKeySpkiB64), { name: "RSA-OAEP", hash: "SHA-1" }, false, [
         "encrypt",

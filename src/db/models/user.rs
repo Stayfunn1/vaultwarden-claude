@@ -87,6 +87,10 @@ pub struct Invitation {
 pub struct SsoUser {
     pub user_uuid: UserId,
     pub identifier: OIDCIdentifier,
+    /// Groups reported by the identity provider (JSON array), see `crate::sso_groups`
+    pub idp_groups: Option<String>,
+    /// Set when the directory sync disabled the user, so it can enable the user again
+    pub disabled_by_sync: bool,
 }
 
 pub enum UserKdfType {
@@ -383,6 +387,7 @@ impl User {
         TwoFactor::delete_all_by_user(&self.uuid, conn).await?;
         TwoFactorIncomplete::delete_all_by_user(&self.uuid, conn).await?;
         Invitation::take(&self.email, conn).await; // Delete invitation if any
+        super::ManagerIcons::delete_by_owner(&self.uuid, conn).await?;
 
         conn.run(move |conn| {
             diesel::delete(users::table.filter(users::uuid.eq(self.uuid))).execute(conn).map_res("Error deleting user")
@@ -573,6 +578,56 @@ pub struct UserId(String);
 pub struct KeyId(String);
 
 impl SsoUser {
+    pub fn new(user_uuid: UserId, identifier: OIDCIdentifier) -> Self {
+        Self {
+            user_uuid,
+            identifier,
+            idp_groups: None,
+            disabled_by_sync: false,
+        }
+    }
+
+    /// The groups the identity provider reported at the last login, refresh or directory sync
+    pub fn groups(&self) -> Option<Vec<String>> {
+        self.idp_groups.as_ref().and_then(|g| serde_json::from_str(g).ok())
+    }
+
+    pub async fn find_by_user(user_uuid: &UserId, conn: &DbConn) -> Option<Self> {
+        conn.run(move |conn| sso_users::table.filter(sso_users::user_uuid.eq(user_uuid)).first::<Self>(conn).ok()).await
+    }
+
+    pub async fn get_all(conn: &DbConn) -> Vec<(User, Self)> {
+        conn.run(move |conn| {
+            users::table
+                .inner_join(sso_users::table)
+                .select(<(User, Self)>::as_select())
+                .load::<(User, Self)>(conn)
+                .unwrap_or_default()
+        })
+        .await
+    }
+
+    pub async fn set_groups(user_uuid: &UserId, groups: &[String], conn: &DbConn) -> EmptyResult {
+        let value = serde_json::to_string(groups)?;
+        conn.run(move |conn| {
+            diesel::update(sso_users::table.filter(sso_users::user_uuid.eq(user_uuid)))
+                .set(sso_users::idp_groups.eq(Some(value)))
+                .execute(conn)
+                .map_res("Error saving SSO user groups")
+        })
+        .await
+    }
+
+    pub async fn set_disabled_by_sync(user_uuid: &UserId, disabled: bool, conn: &DbConn) -> EmptyResult {
+        conn.run(move |conn| {
+            diesel::update(sso_users::table.filter(sso_users::user_uuid.eq(user_uuid)))
+                .set(sso_users::disabled_by_sync.eq(disabled))
+                .execute(conn)
+                .map_res("Error saving SSO user")
+        })
+        .await
+    }
+
     pub async fn save(&self, conn: &DbConn) -> EmptyResult {
         db_run! { conn:
             mysql {

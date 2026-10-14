@@ -3,7 +3,24 @@
 
 import { Api, ApiError, TwoFactorRequired, TwoFactorType, decodeJwt } from "./api.js";
 import { Vault, CipherType, CipherTypeNames, FieldType, cloneView, newCipherView, normalizeFolderPath, parentPath, leafName, isSameOrDescendant, sanitizeSegment } from "./vault.js";
-import { deriveMasterKey, hashMasterKey, pkcePair, randomBytes, b64urlEncode, b64urlDecode, b64encode, totpCode, pbkdf2, utf8, encryptString, decryptString } from "./bwcrypto.js";
+import {
+    deriveMasterKey,
+    hashMasterKey,
+    stretchMasterKey,
+    pkcePair,
+    randomBytes,
+    b64urlEncode,
+    b64urlDecode,
+    b64encode,
+    totpCode,
+    pbkdf2,
+    utf8,
+    encryptString,
+    decryptString,
+    encryptBytes,
+    generateRsaKeyPair,
+    SymmetricKey,
+} from "./bwcrypto.js";
 import {
     h, icon, clear, settings, saveSettings, toast, copyText, clipboardState, showMenu, closeMenus, dialog, confirmDialog, promptDialog,
     alertDialog, progressDialog, isDialogOpen, closeAllDialogs, formatDate, formatBytes, downloadBlob, safeUrl,
@@ -12,6 +29,9 @@ import { TreeView, ciphersForNode, folderKey, collectionKey } from "./tree.js";
 import { EntryTable, COLUMNS, typeIcon } from "./table.js";
 import { editEntryDialog } from "./editor.js";
 import { generatorDialog, importKeePassDialog, shareDialog, collectionsDialog, settingsDialog, shortcutsDialog } from "./dialogs.js";
+import { newOrganizationDialog, organizationDialog, collectionAccessDialog, pendingConfirmations } from "./orgs.js";
+import { IconStore } from "./iconstore.js";
+import { renderIcon, faviconIcon, iconPickerDialog } from "./kpicons.js";
 
 const SESSION_KEY = "vwm.session";
 // Card, identity and SSH key values which are treated like passwords
@@ -22,10 +42,36 @@ const SSO_RESULT_KEY = "vwm.sso.result";
 const BASE_URL = new URL("../", window.location.href).href.replace(/\/$/, "");
 const SSO_REDIRECT = `${BASE_URL}/manager/sso-callback.html`;
 
+const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+
+function effectiveTheme() {
+    return settings.theme === "light" || settings.theme === "dark" ? settings.theme : darkQuery.matches ? "dark" : "light";
+}
+
+function updateThemeButton(btn) {
+    const dark = effectiveTheme() === "dark";
+    const title = dark ? "Switch to light mode" : "Switch to dark mode";
+    btn.title = title;
+    btn.setAttribute("aria-label", title);
+    clear(btn).appendChild(icon(dark ? "sun" : "moon"));
+}
+
 function applyTheme() {
     const t = settings.theme;
     if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
     else delete document.documentElement.dataset.theme;
+    document.querySelectorAll(".theme-toggle").forEach(updateThemeButton);
+}
+darkQuery.addEventListener("change", applyTheme);
+
+// Switches between light and dark (the View menu also offers "Follow system")
+function themeToggleButton(cls) {
+    const btn = h("button", { type: "button", class: `${cls} theme-toggle`, onclick: () => {
+        settings.theme = effectiveTheme() === "dark" ? "light" : "dark";
+        applyTheme();
+    } });
+    updateThemeButton(btn);
+    return btn;
 }
 
 function remember2faKey(email) {
@@ -115,6 +161,7 @@ class App {
         const box = h(
             "div",
             { class: "auth-box" },
+            themeToggleButton("tb-btn auth-theme"),
             h("div", { class: "auth-logo" }, h("img", { src: "../vw_static/vaultwarden-icon.png", alt: "", width: 48, height: 48 }), h("div", null, h("h1", null, "Vaultwarden Manager"), h("div", { class: "muted" }, title))),
             ...content,
         );
@@ -203,6 +250,7 @@ class App {
             }
         }
         if (!resp.Key) {
+            if (sso) return this.showSetPassword(resp, email);
             throw new Error("Your account has no master password yet. Finish setting up your account in the Bitwarden web vault or app first, then log in here.");
         }
         const kdf = { kdf: resp.Kdf, kdfIterations: resp.KdfIterations, kdfMemory: resp.KdfMemory, kdfParallelism: resp.KdfParallelism };
@@ -215,6 +263,74 @@ class App {
         } else {
             this.showUnlock();
         }
+    }
+
+    // First single sign-on of a new account: choose the master password, which encrypts the vault.
+    // The keys are made here like in the Bitwarden clients, the server only gets them encrypted.
+    showSetPassword(resp, email) {
+        const policy = resp.MasterPasswordPolicy || {};
+        const minLength = Math.max(12, Number(policy.minLength) || 0);
+        const rules = [
+            [`at least ${minLength} characters`, (p) => p.length >= minLength],
+            policy.requireUpper ? ["an upper case letter", (p) => /[A-Z]/.test(p)] : null,
+            policy.requireLower ? ["a lower case letter", (p) => /[a-z]/.test(p)] : null,
+            policy.requireNumbers ? ["a number", (p) => /[0-9]/.test(p)] : null,
+            policy.requireSpecial ? ["a special character", (p) => /[^A-Za-z0-9]/.test(p)] : null,
+        ].filter(Boolean);
+        const err = h("div", { class: "form-error", role: "alert" });
+        const password = h("input", { type: "password", class: "wide", autocomplete: "new-password" });
+        const repeat = h("input", { type: "password", class: "wide", autocomplete: "new-password" });
+        const hint = h("input", { type: "text", class: "wide", autocomplete: "off" });
+        const btn = h("button", { type: "submit", class: "primary wide" }, "Set master password");
+        const form = h(
+            "form",
+            { class: "auth-form" },
+            h("div", { class: "muted" }, `Welcome ${email}. Choose the master password of your vault. It encrypts all your entries and is never sent to the server, so it can not be reset. Required: ${rules.map((r) => r[0]).join(", ")}.`),
+            h("label", { class: "field" }, h("span", null, "Master password"), password),
+            h("label", { class: "field" }, h("span", null, "Repeat master password"), repeat),
+            h("label", { class: "field" }, h("span", null, "Hint (optional, shown to anyone asking for it)"), hint),
+            btn,
+            err,
+        );
+        form.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            err.textContent = "";
+            const pw = password.value;
+            const missing = rules.filter(([, test]) => !test(pw)).map(([text]) => text);
+            if (missing.length) return (err.textContent = `The master password needs ${missing.join(", ")}.`);
+            if (pw !== repeat.value) return (err.textContent = "The passwords do not match.");
+            if (hint.value && hint.value.trim() === pw) return (err.textContent = "The hint can not be the password.");
+            btn.disabled = true;
+            btn.textContent = "Setting up…";
+            try {
+                const kdf = { kdf: 0, kdfIterations: 600000, kdfMemory: null, kdfParallelism: null };
+                const masterKey = await deriveMasterKey(pw, email, kdf);
+                const userKey = SymmetricKey.generate();
+                const key = await encryptBytes(userKey.raw, await stretchMasterKey(masterKey));
+                const { pkcs8, spki } = await generateRsaKeyPair();
+                await this.api.post("/api/accounts/set-password", {
+                    masterPasswordHash: await hashMasterKey(masterKey, pw),
+                    masterPasswordHint: hint.value.trim() || null,
+                    key,
+                    keys: { publicKey: b64encode(spki), encryptedPrivateKey: await encryptBytes(pkcs8, userKey) },
+                    ...kdf,
+                    orgIdentifier: null,
+                });
+                await this.completeLogin(
+                    { ...resp, Key: key, Kdf: kdf.kdf, KdfIterations: kdf.kdfIterations, KdfMemory: null, KdfParallelism: null },
+                    email,
+                    pw,
+                    masterKey,
+                    true,
+                );
+            } catch (ex) {
+                err.textContent = ex.message || String(ex);
+                btn.disabled = false;
+                btn.textContent = "Set master password";
+            }
+        });
+        this.authFrame("Set up your vault", form);
+        password.focus();
     }
 
     async rememberPasswordCheck(masterKey, password) {
@@ -428,6 +544,7 @@ class App {
 
     lock() {
         if (!this.vault.userKey) return;
+        this.icons = null;
         closeMenus();
         // Close open dialogs, their data is about to be wiped
         closeAllDialogs();
@@ -479,9 +596,147 @@ class App {
         } catch {
             this.lastRevision = null;
         }
+        this.icons = new IconStore(this.vault);
+        await this.loadIcons();
         this.buildMain();
         await this.loadTreeState();
         this.refresh();
+        this.checkPendingConfirmations();
+    }
+
+    // ----- Icons -----------------------------------------------------------------------------------
+
+    async loadIcons() {
+        if (!this.icons) return;
+        try {
+            await this.icons.load();
+        } catch (e) {
+            // An older server without the icon storage, or no connection: the default icons are shown
+            console.warn("Unable to load the icons", e);
+        }
+    }
+
+    // The icon of an entry: its own icon, else the website icon (when enabled), else the default icon of its type
+    entryIcon(v) {
+        const own = this.icons?.itemIcon(v);
+        if (own) return renderIcon(own, typeIcon(v));
+        if (settings.websiteIcons && v.login?.uris?.length && !v.deletedDate) {
+            try {
+                const host = new URL(v.login.uris[0].uri).hostname;
+                if (host) return faviconIcon(host, typeIcon(v));
+            } catch {
+                /* not a URL */
+            }
+        }
+        return null;
+    }
+
+    groupIcon(node) {
+        if (!this.icons) return null;
+        let own = null;
+        if (node.kind === "folder" && node.folderIds?.length) own = this.icons.groupIcon(node.folderIds[0], null);
+        else if (node.kind === "collection" && node.collectionIds?.length) own = this.icons.groupIcon(node.collectionIds[0], node.orgId);
+        return own ? renderIcon(own, "folder") : null;
+    }
+
+    // Lets the user choose an icon. Returns the choice for IconStore.apply or undefined.
+    async chooseIcon(title, organizationId, current) {
+        if (!this.icons?.canEdit(organizationId)) {
+            await alertDialog(title, "Only managers, admins and owners of the organization can change its icons.");
+            return undefined;
+        }
+        const choice = await iconPickerDialog(title, current, this.icons.customImages(organizationId));
+        if (!choice) return undefined;
+        return choice.reset ? null : choice;
+    }
+
+    async changeEntryIcons(list = this.selected) {
+        list = list.filter((v) => !v.deletedDate);
+        if (!list.length) return;
+        const orgIds = new Set(list.map((v) => v.organizationId || null));
+        if (orgIds.size > 1) return alertDialog("Change icon", "Select entries of one vault or organization only.");
+        const orgId = [...orgIds][0];
+        const choice = await this.chooseIcon(list.length > 1 ? `Icon of ${list.length} entries` : "Icon", orgId, this.icons?.itemIcon(list[0]));
+        if (choice === undefined) return;
+        try {
+            await this.icons.apply(list.map((v) => ({ organizationId: orgId, kind: "item", id: v.id, icon: choice })));
+        } catch (e) {
+            return alertDialog("Change icon", e.message || String(e));
+        }
+        this.refresh();
+    }
+
+    async changeGroupIcon(node) {
+        const isFolder = node.kind === "folder";
+        const id = isFolder ? node.folderIds?.[0] : node.collectionIds?.[0];
+        if (!id) return;
+        const orgId = isFolder ? null : node.orgId;
+        const choice = await this.chooseIcon(`Icon of ${node.label}`, orgId, this.icons?.groupIcon(id, orgId));
+        if (choice === undefined) return;
+        try {
+            await this.icons.apply([{ organizationId: orgId, kind: "group", id, icon: choice }]);
+        } catch (e) {
+            return alertDialog("Change icon", e.message || String(e));
+        }
+        this.refresh();
+    }
+
+    // ----- Organizations ---------------------------------------------------------------------------
+
+    // Shows a notice in the status bar when members wait for confirmation in an organization the user manages
+    async checkPendingConfirmations() {
+        try {
+            this.pending = await pendingConfirmations(this.vault);
+        } catch {
+            this.pending = new Map();
+        }
+        if (!this.statusNotice) return;
+        const total = [...this.pending.values()].reduce((a, b) => a + b, 0);
+        this.statusNotice.hidden = total === 0;
+        this.statusNotice.textContent = `⚠ ${total} member${total === 1 ? "" : "s"} waiting for confirmation`;
+        this.statusNotice.title = [...this.pending].map(([id, n]) => `${this.vault.organizations.get(id)?.name}: ${n}`).join("\n");
+    }
+
+    openPendingConfirmations() {
+        const orgId = [...(this.pending || new Map()).keys()][0];
+        if (orgId) this.manageOrganization(orgId);
+    }
+
+    async newOrganization() {
+        const id = await newOrganizationDialog(this);
+        if (!id) return;
+        await this.sync(true);
+        toast("Organization created", "ok");
+        if (this.tree) this.tree.select(collectionKey(id, ""), true);
+    }
+
+    async manageOrganization(orgId, tab) {
+        if (!this.vault.orgKeys.has(orgId)) {
+            return alertDialog("Organization", "Your membership in this organization is not confirmed yet, so its data can not be decrypted here.");
+        }
+        const changed = await organizationDialog(this, orgId, tab);
+        if (changed) await this.sync(true);
+        this.checkPendingConfirmations();
+    }
+
+    async collectionAccess(collectionId) {
+        if (await collectionAccessDialog(this, collectionId)) await this.sync(true);
+    }
+
+    orgMenuItems() {
+        const orgs = [...this.vault.organizations.values()].sort((a, b) => a.name.localeCompare(b.name));
+        const items = [{ label: "New organization…", icon: "add", action: () => this.newOrganization() }, "-"];
+        if (!orgs.length) items.push({ label: "(no organizations)", disabled: true });
+        for (const o of orgs) {
+            const n = this.pending?.get(o.id);
+            items.push({
+                label: `${o.name}${n ? ` (${n} to confirm)` : ""}…`,
+                icon: "org",
+                action: () => this.manageOrganization(o.id),
+                disabled: !this.vault.canManageOrg(o.id),
+            });
+        }
+        return items;
     }
 
     // The expanded folders are remembered per account. Their keys contain folder names, so they are
@@ -525,7 +780,8 @@ class App {
         const workspace = h("div", { class: "workspace" }, this.leftPane, vSplit, this.rightPane);
         this.statusLeft = h("span", { class: "status-left" });
         this.statusRight = h("span", { class: "status-right" });
-        const status = h("div", { class: "statusbar" }, this.statusLeft, this.statusRight);
+        this.statusNotice = h("button", { type: "button", class: "status-notice", hidden: true, onclick: () => this.openPendingConfirmations() });
+        const status = h("div", { class: "statusbar" }, this.statusLeft, this.statusNotice, this.statusRight);
         this.root.appendChild(h("div", { class: "main-view" }, this.menubar, this.toolbar, workspace, status));
         this.applyDetailsVisibility();
         this.detailsEl.style.height = `${settings.detailsHeight}px`;
@@ -544,6 +800,7 @@ class App {
                 this.refreshEntries(false);
             },
             onContext: (node, x, y) => showMenu(this.groupMenuItems(node), x, y),
+            groupIcon: (node) => this.groupIcon(node),
             canDrop: (node, dt) => this.canDrop(node, dt),
             onDrop: (node, dt) => this.handleDrop(node, dt),
             onDragStartNode: (node) => (this._dragNode = node),
@@ -559,6 +816,7 @@ class App {
             onContext: (x, y) => showMenu(this.entryMenuItems(), x, y),
             onHeaderContext: (x, y) => showMenu([{ label: "Columns", submenu: this.columnMenuItems() }], x, y),
             onCellDblClick: (v, col) => this.onCellDblClick(v, col),
+            entryIcon: (v) => this.entryIcon(v),
         });
         clipboardState.onTick = (left) => {
             this.clipStatus = left ? `Clipboard is cleared in ${left}s` : "";
@@ -647,6 +905,7 @@ class App {
             ["File", () => this.fileMenuItems()],
             ["Edit", () => this.entryMenuItems(true)],
             ["Group", () => this.groupMenuItems(this.tree?.selected)],
+            ["Organizations", () => this.orgMenuItems()],
             ["View", () => this.viewMenuItems()],
             ["Tools", () => this.toolsMenuItems()],
             ["Help", () => this.helpMenuItems()],
@@ -734,6 +993,7 @@ class App {
             h("span", { class: "tb-sep" }),
             btn("key", "Password generator (Ctrl+G)", () => generatorDialog()),
             h("span", { class: "tb-spacer" }),
+            themeToggleButton("tb-btn"),
             h("label", { class: "search-box" }, icon("search"), this.searchInput),
         );
     }
@@ -813,6 +1073,7 @@ class App {
                 "-",
                 { label: one?.favorite ? "Remove from favorites" : "Add to favorites", icon: "star", action: () => this.toggleFavorite(), disabled: !sel.length },
                 { label: "Move to folder…", icon: "folder", action: () => this.moveToFolderDialog(), disabled: !sel.length },
+                { label: "Change icon…", action: () => this.changeEntryIcons(), disabled: !sel.length || !this.icons },
                 { label: "Move to organization…", icon: "org", action: () => this.shareEntries(), disabled: !anyPersonal || !this.vault.organizations.size },
                 { label: "Collections…", icon: "collection", action: () => this.editCollections(), disabled: orgIds.size !== 1 || sel.some((v) => !v.organizationId) },
             );
@@ -833,6 +1094,7 @@ class App {
                 { label: "Add sub folder…", icon: "add", shortcut: "Insert", action: () => this.addGroup(node) },
                 { label: "Rename folder…", icon: "edit", shortcut: "F2", action: () => this.renameGroup(node), disabled: node.kind !== "folder" },
                 { label: "Move folder to…", icon: "folder", action: () => this.moveGroupDialog(node), disabled: node.kind !== "folder" },
+                { label: "Change icon…", action: () => this.changeGroupIcon(node), disabled: node.kind !== "folder" || !node.folderIds?.length },
                 { label: "Delete folder…", icon: "del", shortcut: "Del", action: () => this.deleteGroup(node), disabled: node.kind !== "folder" },
                 "-",
                 { label: "Add entry here", icon: "login", action: () => this.addEntry(CipherType.Login) },
@@ -841,8 +1103,12 @@ class App {
             items.push(
                 { label: "Add sub collection…", icon: "add", shortcut: "Insert", action: () => this.addGroup(node) },
                 { label: "Rename collection…", icon: "edit", shortcut: "F2", action: () => this.renameGroup(node), disabled: node.kind !== "collection" || node.virtual },
+                { label: "Change icon…", action: () => this.changeGroupIcon(node), disabled: node.kind !== "collection" || !node.collectionIds?.length || !this.icons?.canEdit(node.orgId) },
                 { label: "Delete collection…", icon: "del", shortcut: "Del", action: () => this.deleteGroup(node), disabled: node.kind !== "collection" },
-                this.config.webVaultEnabled ? { label: "Manage members and groups…", icon: "org", action: () => window.open(`${BASE_URL}/#/organizations/${node.orgId}/members`, "_blank", "noopener") } : null,
+                "-",
+                { label: "Collection access…", icon: "user", action: () => this.collectionAccess(node.collectionIds[0]), disabled: node.kind !== "collection" || !node.collectionIds?.length || !this.vault.canManageOrg(node.orgId) },
+                { label: "Manage organization…", icon: "org", action: () => this.manageOrganization(node.orgId), disabled: !this.vault.canManageOrg(node.orgId) },
+                this.config.webVaultEnabled ? { label: "Open in the Bitwarden web vault", action: () => window.open(`${BASE_URL}/#/organizations/${node.orgId}/members`, "_blank", "noopener") } : null,
             );
         } else if (node.kind === "trash") {
             items.push(
@@ -880,6 +1146,10 @@ class App {
             { label: "Show entries of sub folders", checked: settings.showSubfolderEntries, action: () => {
                 settings.showSubfolderEntries = !settings.showSubfolderEntries;
                 this.refreshEntries();
+            } },
+            { label: "Show website icons", checked: !!settings.websiteIcons, action: () => {
+                settings.websiteIcons = !settings.websiteIcons;
+                this.table.renderRows(true);
             } },
             { label: "Show entry details", checked: settings.showDetails, action: () => {
                 settings.showDetails = !settings.showDetails;
@@ -1019,7 +1289,7 @@ class App {
             }
             grid.append(h("span", { class: "dl" }, label), h("span", { class: "dvw" }, val, opts.noCopy ? "" : this.copyButton(() => copyText(value, label))));
         };
-        el.appendChild(h("div", { class: "details-title" }, icon(typeIcon(v)), h("span", null, v.name || "(no title)"), v.favorite ? icon("star") : "", h("span", { class: "muted" }, this.groupName(v) ? `  —  ${this.groupName(v)}` : "")));
+        el.appendChild(h("div", { class: "details-title" }, this.entryIcon(v) || icon(typeIcon(v)), h("span", null, v.name || "(no title)"), v.favorite ? icon("star") : "", h("span", { class: "muted" }, this.groupName(v) ? `  —  ${this.groupName(v)}` : "")));
         if (v.decryptError) el.appendChild(h("div", { class: "form-error" }, "Parts of this item could not be decrypted."));
         if (v.login) {
             add("User name", v.login.username);
@@ -1610,7 +1880,10 @@ class App {
         let applied = false;
         try {
             applied = await this.vault.sync((d, t) => prog?.update("Decrypting", d, t), { background: silent });
-            if (applied) this.lastRevision = await revision;
+            if (applied) {
+                this.lastRevision = await revision;
+                await this.loadIcons();
+            }
             if (!silent) toast("Vault synchronized", "ok", 1500);
         } catch (e) {
             if (!silent) alertDialog("Synchronization failed", e.message);
@@ -1622,6 +1895,7 @@ class App {
         if (applied) {
             this.refresh();
             if (selection.length) this.table.selectIds(selection.filter((id) => this.vault.ciphers.has(id)));
+            if (!silent) this.checkPendingConfirmations();
         }
         return applied;
     }

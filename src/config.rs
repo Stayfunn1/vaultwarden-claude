@@ -822,6 +822,24 @@ make_config! {
         sso_only:                       bool,   true,   def,    false;
         /// Allow personal API key login when SSO only |> When disabled, the personal API key (used by the Bitwarden CLI) can not be used to log in while `SSO_ONLY` is active
         sso_only_allow_api_key:         bool,   true,   def,    true;
+        /// Groups claim |> Claim with the groups or roles of the user, in the ID token or the userinfo response. Nested claims are separated by `.`, e.g. `realm_access.roles`
+        sso_groups_claim:               String, true,   def,    "groups".to_owned();
+        /// Access groups |> Comma separated list. When set, only members of one of these identity provider groups can use Vaultwarden
+        sso_access_groups:              String, true,   def,    String::new();
+        /// Organization creation groups |> Comma separated list. When set, members of these groups can create organizations (in addition to the users in `ORG_CREATION_USERS`)
+        sso_org_creation_groups:        String, true,   def,    String::new();
+        /// Organization sync |> Manage organization memberships, roles and groups with identity provider groups named `<prefix>/<organization>[/owners|admins|managers|<group>]`
+        sso_org_sync:                   bool,   true,   def,    false;
+        /// Organization sync prefix |> The first part of the group names used by the organization sync
+        sso_org_sync_prefix:            String, true,   def,    "vaultwarden".to_owned();
+        /// Keycloak directory sync schedule |> Cron schedule (with seconds) of the Keycloak directory sync, e.g. `0 */15 * * * *`. Empty disables the schedule. Changes need a restart
+        sso_directory_sync_schedule:    String, true,   def,    String::new();
+        /// Keycloak admin API URL |> The admin REST API of the realm, e.g. `https://keycloak.example.com/admin/realms/main`. Derived from the authority when empty
+        sso_directory_sync_url:         String, true,   def,    String::new();
+        /// Directory sync creates accounts |> Create accounts for new Keycloak users (with access) before their first login, so they can be added to organizations
+        sso_directory_sync_create_users: bool,  true,   def,    true;
+        /// Directory sync disables accounts |> Disable the accounts of users which are disabled in or removed from Keycloak, and enable them again when they return
+        sso_directory_sync_disable_users: bool, true,   def,    true;
         /// Allow SSO flow to create account |> You probably want to disable it when using a public provider
         sso_signups_allowed:            bool,   true,   def,    true;
         /// Allow email association |> Associate existing non-SSO user based on email
@@ -1115,6 +1133,17 @@ fn validate_config(cfg: &ConfigItems, on_update: bool) -> Result<(), Error> {
         validate_internal_sso_issuer_url(&cfg.sso_authority)?;
         validate_internal_sso_redirect_url(&cfg.sso_callback_path)?;
         validate_sso_master_password_policy(cfg.sso_master_password_policy.as_ref())?;
+    }
+
+    if !cfg.sso_directory_sync_schedule.trim().is_empty()
+        && cfg.sso_directory_sync_schedule.parse::<Schedule>().is_err()
+    {
+        err!(
+            "`SSO_DIRECTORY_SYNC_SCHEDULE` is not a valid cron schedule (sec min hour day month weekday), e.g. `0 */15 * * * *`"
+        )
+    }
+    if !cfg.sso_directory_sync_url.is_empty() && !cfg.sso_directory_sync_url.starts_with("http") {
+        err!("`SSO_DIRECTORY_SYNC_URL` must be an http(s) URL")
     }
 
     if cfg._enable_yubico {
@@ -1514,6 +1543,13 @@ impl Config {
         crate::api::invalidate_css_cache();
 
         Ok(())
+    }
+
+    /// Changes `ORG_CREATION_USERS` in the saved configuration, keeping all other saved settings
+    pub async fn set_org_creation_users(&self, value: String) -> Result<(), Error> {
+        let mut builder = self.inner.read().unwrap()._usr.clone();
+        builder.org_creation_users = Some(value);
+        self.update_config(builder, true).await
     }
 
     /// Tests whether an email's domain is allowed. A domain is allowed if it

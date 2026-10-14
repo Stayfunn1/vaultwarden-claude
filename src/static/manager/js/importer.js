@@ -14,12 +14,12 @@ function entryKey(path, name, username) {
     return [normalizeFolderPath(path || "").toLowerCase(), (name || "").toLowerCase(), (username || "").toLowerCase()].join("\u0000");
 }
 
-// options: { organizationId, skipExisting, signal: { cancelled } }
+// options: { organizationId, skipExisting, signal: { cancelled }, icons: IconStore (stores the icons of entries and groups) }
 // onProgress({ phase, done, total })
 export async function importEntries(vault, converted, options = {}, onProgress = () => {}) {
     const organizationId = options.organizationId || null;
     const signal = options.signal || { cancelled: false };
-    const result = { created: 0, skipped: 0, attachments: 0, failed: [], warnings: [...(converted.warnings || [])] };
+    const result = { created: 0, skipped: 0, attachments: 0, icons: 0, failed: [], warnings: [...(converted.warnings || [])] };
     const checkCancelled = () => {
         if (signal.cancelled) throw new Error("Import cancelled");
     };
@@ -147,11 +147,13 @@ export async function importEntries(vault, converted, options = {}, onProgress =
     }
 
     // ----- 5. Entries with attachments ------------------------------------------------
+    const createdIds = new Map(); // prepared entry -> cipher id, for the entries created one by one
     await mapLimit(withFiles, 3, async (p) => {
         if (signal.cancelled) return;
         let cipherId;
         try {
             cipherId = (await createSingle(vault, p, organizationId)).id;
+            createdIds.set(p, cipherId);
             result.created++;
         } catch (err) {
             result.failed.push({ name: p.entry.sourceTitle, path: p.entry.folderPath, error: err.message });
@@ -211,6 +213,15 @@ export async function importEntries(vault, converted, options = {}, onProgress =
             present.add(entryKey(f ? f.path : "", c.name, c.login?.username));
         }
     }
+    // ----- 6. Icons ---------------------------------------------------------------------
+    if (options.icons && converted.groupIcons) {
+        try {
+            result.icons = await storeIcons(vault, options.icons, organizationId, prepared, createdIds, containerIds, converted.groupIcons);
+        } catch (e) {
+            result.warnings.push(`The icons could not be saved: ${e.message}`);
+        }
+    }
+
     const failedNames = new Set(result.failed.map((f) => entryKey(f.path, f.name, "")));
     for (const p of prepared) {
         const path = organizationId ? p.entry.folderPath || orgRootCollection : p.entry.folderPath;
@@ -221,6 +232,44 @@ export async function importEntries(vault, converted, options = {}, onProgress =
     }
     onProgress({ phase: "Done", done: 1, total: 1 });
     return result;
+}
+
+// The bulk import does not return the new ids, so entries are found by folder, title and user name
+// (entries which are the same in all three get their icons in the order of the KeePass file)
+async function storeIcons(vault, icons, organizationId, prepared, createdIds, containerIds, groupIcons) {
+    if (!icons.canEdit(organizationId)) return 0;
+    const candidates = new Map();
+    const known = new Set(createdIds.values());
+    for (const c of vault.ciphers.values()) {
+        if (c.deletedDate || (c.organizationId || null) !== organizationId || known.has(c.id)) continue;
+        const paths = organizationId
+            ? c.collectionIds.map((id) => vault.collections.get(id)?.path).filter(Boolean)
+            : [c.folderId ? vault.folders.get(c.folderId)?.path || "" : ""];
+        for (const path of paths) {
+            const k = entryKey(path, c.name, c.login?.username);
+            if (!candidates.has(k)) candidates.set(k, []);
+            candidates.get(k).push(c.id);
+        }
+    }
+    const changes = [];
+    const taken = new Set();
+    for (const p of prepared) {
+        if (!p.entry.icon) continue;
+        let id = createdIds.get(p);
+        if (!id) {
+            const path = organizationId ? p.entry.folderPath || "Imported" : p.entry.folderPath || "";
+            id = (candidates.get(entryKey(path, p.entry.view.name, p.entry.view.login?.username)) || []).find((c) => !taken.has(c));
+        }
+        if (!id) continue;
+        taken.add(id);
+        changes.push({ organizationId, kind: "item", id, icon: p.entry.icon });
+    }
+    for (const [path, icon] of groupIcons) {
+        const id = containerIds.get(path);
+        if (id) changes.push({ organizationId, kind: "group", id, icon });
+    }
+    if (changes.length) await icons.apply(changes);
+    return changes.length;
 }
 
 async function sendBatch(vault, batch, organizationId) {

@@ -71,6 +71,10 @@ pub fn routes() -> Vec<Route> {
         get_diagnostics_config,
         resend_user_invite,
         get_diagnostics_http,
+        get_directory_sync,
+        post_directory_sync,
+        post_org_creation_mode,
+        post_user_org_creation,
     ]
 }
 
@@ -345,6 +349,23 @@ async fn test_smtp(data: Json<InviteData>, _token: AdminToken) -> EmptyResult {
     }
 }
 
+/// Status of the Keycloak directory sync
+#[get("/sso/directory-sync")]
+fn get_directory_sync(_token: AdminToken) -> Json<Value> {
+    Json(json!({
+        "enabled": CONFIG.sso_enabled(),
+        "schedule": CONFIG.sso_directory_sync_schedule(),
+        "lastRun": crate::sso_directory::last_run(),
+    }))
+}
+
+/// Runs the Keycloak directory sync now
+#[post("/sso/directory-sync", format = "application/json")]
+async fn post_directory_sync(_token: AdminToken, conn: DbConn) -> JsonResult {
+    let report = crate::sso_directory::run(&conn).await?;
+    Ok(Json(json!(report)))
+}
+
 #[get("/logout")]
 fn logout(cookies: &CookieJar<'_>) -> Redirect {
     cookies.remove(Cookie::build(COOKIE_NAME).path(admin_path()));
@@ -385,13 +406,124 @@ async fn users_overview(_token: AdminToken, conn: DbConn) -> ApiResult<Html<Stri
             None => json!("Never"),
         };
 
+        let groups = sso_u.as_ref().and_then(SsoUser::groups);
+        let org_creation = crate::sso_groups::org_creation_reason(&u.email, groups.as_deref());
+        usr["org_creation"] = json!(org_creation.is_some());
+        usr["org_creation_title"] = json!(match org_creation {
+            Some("everyone") => "Everyone may create organizations",
+            Some("user") => "Allowed for this user",
+            Some(_) => "Allowed as member of an organization creation group of the identity provider",
+            None => "This user can not create organizations",
+        });
+        usr["org_creation_listed"] = json!(org_creation == Some("user"));
+        usr["sso_no_access"] = json!(crate::sso_groups::has_access(groups.as_deref()) == Some(false));
+        usr["disabled_by_sync"] = json!(sso_u.as_ref().is_some_and(|s| s.disabled_by_sync));
+        usr["idp_groups"] = json!(groups);
         usr["sso_identifier"] = json!(sso_u.map_or(String::new(), |u| u.identifier.to_string()));
 
         users_json.push(usr);
     }
 
-    let text = AdminTemplateData::new("admin/users", json!(users_json)).render()?;
+    let everyone = crate::sso_groups::org_creation_everyone();
+    let creation_groups = crate::sso_groups::org_creation_groups();
+    let (label_all, label_selected) = if creation_groups.is_empty() {
+        ("Everyone", "Only the users allowed below")
+    } else {
+        ("Only members of the creation groups", "Members of the creation groups and the users allowed below")
+    };
+    let last_sync = crate::sso_directory::last_run().map(|r| {
+        let when = format_naive_datetime_local(&r.finished, DT_FMT);
+        match (r.report, r.error) {
+            (Some(report), _) => format!(
+                "{when}: {} users, {} created, {} linked, {} disabled, {} enabled, {} skipped",
+                report.users,
+                report.created,
+                report.linked,
+                report.disabled,
+                report.enabled,
+                report.skipped.len()
+            ),
+            (None, error) => format!("{when}: failed, {}", error.unwrap_or_default()),
+        }
+    });
+    let page_data = json!({
+        "users": users_json,
+        "permissions": {
+            "access_groups": crate::sso_groups::access_groups().join(", "),
+            "org_creation_everyone": everyone,
+            "org_creation_groups": creation_groups.join(", "),
+            "org_creation_options": [
+                { "value": "all", "label": label_all, "selected": everyone },
+                { "value": "selected", "label": label_selected, "selected": !everyone },
+            ],
+            "org_sync": CONFIG.sso_org_sync(),
+            "org_sync_prefix": CONFIG.sso_org_sync_prefix(),
+            "directory_sync_schedule": CONFIG.sso_directory_sync_schedule(),
+            "directory_sync_last": last_sync,
+        },
+    });
+    let text = AdminTemplateData::new("admin/users", page_data).render()?;
     Ok(Html(text))
+}
+
+#[derive(Deserialize)]
+struct OrgCreationModeData {
+    mode: String,
+}
+
+/// Who can create organizations: everyone (`all`) or only the users allowed one by one (`selected`)
+#[post("/permissions/org-creation", format = "application/json", data = "<data>")]
+async fn post_org_creation_mode(data: Json<OrgCreationModeData>, _token: AdminToken) -> EmptyResult {
+    let value = match data.mode.as_str() {
+        "all" => "all".to_owned(),
+        "selected" => {
+            let users = crate::sso_groups::org_creation_users();
+            if users.is_empty() {
+                "none".to_owned()
+            } else {
+                users.join(",")
+            }
+        }
+        _ => err!("Unknown mode"),
+    };
+    if let Err(e) = CONFIG.set_org_creation_users(value).await {
+        err!(format!("Unable to save config: {e:?}"))
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct UserOrgCreationData {
+    allowed: bool,
+}
+
+/// Allows or denies one user to create organizations (`ORG_CREATION_USERS`)
+#[post("/users/<user_id>/org-creation", format = "application/json", data = "<data>")]
+async fn post_user_org_creation(
+    user_id: UserId,
+    data: Json<UserOrgCreationData>,
+    _token: AdminToken,
+    conn: DbConn,
+) -> EmptyResult {
+    let user = get_user_or_404(&user_id, &conn).await?;
+    if crate::sso_groups::org_creation_everyone() {
+        err!("Everyone may create organizations. Choose \"Only the users allowed below\" first.")
+    }
+    let email = user.email.to_lowercase();
+    let mut users = crate::sso_groups::org_creation_users();
+    users.retain(|u| u != &email);
+    if data.allowed {
+        users.push(email);
+    }
+    let value = if users.is_empty() {
+        "none".to_owned()
+    } else {
+        users.join(",")
+    };
+    if let Err(e) = CONFIG.set_org_creation_users(value).await {
+        err!(format!("Unable to save config: {e:?}"))
+    }
+    Ok(())
 }
 
 #[get("/users/by-mail/<mail>")]

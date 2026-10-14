@@ -4,6 +4,8 @@ import { h, icon, clear, dialog, copyText, formatDate, formatBytes, pickFiles, r
 import { CipherType, CipherTypeNames, FieldType, TypeFields, cloneView } from "./vault.js";
 import { generatePassword, passwordEntropy, totpCode } from "./bwcrypto.js";
 import { generatorDialog } from "./dialogs.js";
+import { typeIcon } from "./table.js";
+import { renderIcon } from "./kpicons.js";
 
 const URI_MATCH = [
     [null, "Default"],
@@ -69,6 +71,7 @@ export function editEntryDialog(app, original, { isNew = false, readOnly = false
     const deletedAttachments = new Set();
     const originalAtStart = original;
     let uploadedFiles = 0;
+    let pendingIcon; // the new icon chosen in the editor, undefined while unchanged
     let collectionIds = [...(view.collectionIds || [])];
 
     return dialog({
@@ -96,7 +99,19 @@ export function editEntryDialog(app, original, { isNew = false, readOnly = false
             const entry = h("div", { class: "form" });
             const title = h("input", { type: "text", class: "wide", value: view.name || "", readonly: !canEdit });
             title.addEventListener("input", () => (view.name = title.value));
-            entry.appendChild(row("Title:", title));
+            const iconBtn = h("button", { type: "button", class: "icon-btn entry-icon-btn", title: "Change icon", disabled: !canEdit || !app.icons });
+            const showIcon = () => {
+                const current = pendingIcon === undefined ? app.entryIcon(view) : pendingIcon && renderIcon(pendingIcon, typeIcon(view));
+                clear(iconBtn).appendChild(current || icon(typeIcon(view)));
+            };
+            iconBtn.addEventListener("click", async () => {
+                const choice = await app.chooseIcon("Icon", view.organizationId || null, pendingIcon === undefined ? app.icons?.itemIcon(view) : pendingIcon);
+                if (choice === undefined) return;
+                pendingIcon = choice;
+                showIcon();
+            });
+            showIcon();
+            entry.appendChild(row("Title:", iconBtn, title));
 
             if (view.type === CipherType.Login) {
                 const l = view.login;
@@ -565,11 +580,21 @@ export function editEntryDialog(app, original, { isNew = false, readOnly = false
                         uploadedFiles++;
                         syncFromVault();
                     }
+                    if (pendingIcon !== undefined && app.icons) {
+                        stage = "icon";
+                        await app.icons.apply([{ organizationId: view.organizationId || null, kind: "item", id: view.id, icon: pendingIcon }]);
+                        pendingIcon = undefined;
+                    }
                     close(vault.ciphers.get(view.id) || saved);
                 } catch (e) {
                     console.error(e);
                     const msg = e.message || String(e);
-                    errorBox.textContent = stage === "entry" ? msg : `The entry was saved, but an attachment could not be changed: ${msg}. Press OK to try again.`;
+                    errorBox.textContent =
+                        stage === "entry"
+                            ? msg
+                            : stage === "icon"
+                              ? `The entry was saved, but the icon could not be changed: ${msg}. Press OK to try again.`
+                              : `The entry was saved, but an attachment could not be changed: ${msg}. Press OK to try again.`;
                     renderAttachments();
                     saveBtn.disabled = false;
                     saveBtn.textContent = "OK";

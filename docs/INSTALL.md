@@ -154,11 +154,17 @@ password. Your custom fields are copyable in the item view of every app.
 
 Everything SSO only blocks, and why the master password stays, is explained in [sso-only.md](sso-only.md).
 
+With Keycloak, the groups can also decide who may use Vaultwarden, who may create organizations and the
+organization memberships, and a scheduled directory sync creates and disables accounts: see
+[keycloak.md](keycloak.md). The resulting permissions are explained in [permissions.md](permissions.md)
+and shown on the admin page under *Users*.
+
 ## 7. Optional: sharing with family or a team
 
-Create an organization in the web vault, invite people, create groups and collections, and move items
-into collections, for example by dragging them onto a collection in the manager. See
-[sharing.md](sharing.md).
+Create an organization in the manager (*Organizations → New organization…*), invite and confirm people,
+create groups, give them access to collections and move items into collections, for example by dragging
+them onto a collection. See [sharing.md](sharing.md). Who may create organizations is set on the admin
+page, see [permissions.md](permissions.md).
 
 ## Backups
 
@@ -187,12 +193,24 @@ git remote add upstream https://github.com/dani-garcia/vaultwarden.git   # once
 git fetch upstream && git merge upstream/main && git push
 ```
 
+Back up before every update (see above): updates can change the database, the changes are applied
+automatically when the new version starts.
+
 ## Coming from an existing Vaultwarden installation
 
-This fork uses the same data folder and database as Vaultwarden and adds no database changes. Stop the
-old container, back up its data folder, use that folder as `./vw-data` (or keep your existing volume
-path) with the `vaultwarden-keepass` image, and start it again. Going back to the official image works
-the same way, with an official version at least as new as this fork's base.
+This fork uses the same data folder and database as Vaultwarden. Stop the old container, back up its
+data folder, use that folder as `./vw-data` (or keep your existing volume path) with the
+`vaultwarden-keepass` image, and start it again.
+
+At its first start the fork adds to the database (SQLite, MySQL and PostgreSQL alike):
+
+* the table `manager_icons` (the icons of the web manager, encrypted),
+* the columns `idp_groups` and `disabled_by_sync` of the table `sso_users` (identity provider groups
+  and the directory sync).
+
+The official Vaultwarden does not use them, so going back to the official image with an official version
+at least as new as this fork's base still works; the icons and the stored groups are then simply not
+used. Restore the backup instead if you want the database exactly as before.
 
 ## Without Docker
 
