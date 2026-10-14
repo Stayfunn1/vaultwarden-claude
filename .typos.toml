@@ -4,6 +4,7 @@ extend-exclude = [
     "playwright/",
     "*.js", # Ignore all JavaScript files
     "!admin*.js", # Except our own JavaScript files
+    "src/static/manager/vendor/", # Third party libraries of the web manager and their licenses
 ]
 ignore-hidden = false
 

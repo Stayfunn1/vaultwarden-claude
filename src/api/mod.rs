@@ -2,6 +2,7 @@ mod admin;
 pub mod core;
 mod icons;
 mod identity;
+mod manager;
 mod notifications;
 mod push;
 mod web;

@@ -62,6 +62,12 @@ async fn send_email_login(data: Json<SendEmailLoginData>, client_headers: Client
         Some(password_hash) if !password_hash.is_empty() => Some(password_hash),
         _ => None,
     };
+    // With SSO only there is no password login to send a code for,
+    // so do not let this endpoint be used to guess master passwords.
+    if master_password_hash.is_some() && CONFIG.sso_enabled() && CONFIG.sso_only() {
+        err!("SSO sign-in is required", format!("IP: {}. Master password 2FA email refused.", client_headers.ip.ip))
+    }
+
     let auth_request_id = match &data.auth_request_id {
         Some(auth_request_id) if !auth_request_id.is_empty() => Some(auth_request_id),
         _ => None,

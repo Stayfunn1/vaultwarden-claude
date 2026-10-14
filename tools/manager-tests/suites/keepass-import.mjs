@@ -1,0 +1,164 @@
+// KeePass import: generates a kdbx with kdbxweb, imports it with the manager code, checks the result with bw
+import fs from "node:fs";
+import path from "node:path";
+import { kdbxweb, register, login, createOrg, BwCli, assert, uid } from "../lib/helpers.mjs";
+import { MANAGER_JS, WORK } from "../lib/env.mjs";
+
+const keepass = await import(path.join(MANAGER_JS, "keepass.js"));
+const importer = await import(path.join(MANAGER_JS, "importer.js"));
+const P = (s) => kdbxweb.ProtectedValue.fromString(s);
+
+export const SAMPLE_PASSWORD = "kpass";
+export const SAMPLE_ENTRIES = 603;
+
+// A database with the KeePass features that matter for the migration
+export async function buildSampleDb() {
+    const db = kdbxweb.Kdbx.create(new kdbxweb.Credentials(P(SAMPLE_PASSWORD)), "My KeePass");
+    db.createRecycleBin();
+    const root = db.getDefaultGroup();
+    const internet = db.createGroup(root, "Internet");
+    const mail = db.createGroup(internet, "Mail");
+    const slash = db.createGroup(root, "Work/Projects");
+    db.createGroup(root, "Empty group");
+
+    const e1 = db.createEntry(mail);
+    e1.fields.set("Title", "Gmail");
+    e1.fields.set("UserName", "alice@gmail.com");
+    e1.fields.set("Password", P("old-password"));
+    e1.fields.set("URL", "https://mail.google.com");
+    e1.fields.set("Notes", "personal mail");
+    e1.pushHistory();
+    e1.fields.set("Password", P("gmail-pass-2"));
+    e1.fields.set("Recovery email", "alice.backup@example.com");
+    e1.fields.set("Security answer", P("blue whale"));
+    e1.fields.set("otp", "otpauth://totp/Gmail:alice?secret=JBSWY3DPEHPK3PXP&issuer=Gmail");
+    e1.fields.set("KP2A_URL_1", "https://accounts.google.com");
+    e1.tags = ["mail", "important"];
+    e1.times.expires = true;
+    e1.times.expiryTime = new Date("2031-05-06T00:00:00Z");
+    e1.binaries.set("readme.txt", await db.createBinary(new TextEncoder().encode("hello attachment")));
+    e1.binaries.set("blob.bin", await db.createBinary(new Uint8Array(200000).map((_, i) => i % 251)));
+
+    const e2 = db.createEntry(slash);
+    e2.fields.set("Title", "Jira");
+    e2.fields.set("UserName", "{REF:U@I:" + Buffer.from(e1.uuid.id, "base64").toString("hex").toUpperCase() + "}");
+    e2.fields.set("Password", P("{REF:P@T:Gmail}"));
+    e2.fields.set("URL", "https://jira.example.com");
+    e2.fields.set("TimeOtp-Secret-Base32", P("GEZDGNBVGY3TQOJQ"));
+    e2.fields.set("TimeOtp-Period", "60");
+    e2.fields.set("Notes", "x".repeat(9000));
+    e2.fields.set("Big field", "y".repeat(5000));
+
+    const e3 = db.createEntry(root);
+    e3.fields.set("Title", "");
+    e3.fields.set("UserName", "root-user");
+    e3.fields.set("URL", "https://root.example.net/path");
+
+    const trashed = db.createEntry(root);
+    trashed.fields.set("Title", "Deleted entry");
+    db.remove(trashed);
+
+    const bulk = db.createGroup(internet, "Bulk");
+    for (let i = 0; i < 600; i++) {
+        const e = db.createEntry(bulk);
+        e.fields.set("Title", `Site ${i}`);
+        e.fields.set("UserName", `user${i}`);
+        e.fields.set("Password", P(`pw-${i}`));
+        e.fields.set("Email", `user${i}@example.com`);
+    }
+    return db;
+}
+
+export async function writeSampleFiles() {
+    const db = await buildSampleDb();
+    const kdbxPath = path.join(WORK, "sample.kdbx");
+    const xmlPath = path.join(WORK, "sample.xml");
+    fs.writeFileSync(kdbxPath, new Uint8Array(await db.save()));
+    fs.writeFileSync(xmlPath, await db.saveXml(true));
+    return { kdbxPath, xmlPath };
+}
+
+export async function run({ base }) {
+    const { kdbxPath, xmlPath } = await writeSampleFiles();
+    const kdbxBytes = new Uint8Array(fs.readFileSync(kdbxPath));
+
+    // Conversion
+    const opened = await keepass.openKeePass(kdbxBytes, SAMPLE_PASSWORD);
+    const conv = keepass.convertKeePass(opened, {});
+    assert(conv.entries.length === SAMPLE_ENTRIES, "all entries except the recycle bin are converted");
+    assert(conv.folderPaths.includes("Internet/Mail") && conv.folderPaths.includes("Internet"), "nested folder paths");
+    assert(conv.folderPaths.includes("Work∕Projects"), "slash in group name does not create nesting");
+    assert(conv.folderPaths.includes("Empty group"), "empty groups kept");
+    const g = conv.entries.find((e) => e.view.name === "Gmail").view;
+    assert(g.login.password === "gmail-pass-2" && g.passwordHistory[0].password === "old-password", "history converted");
+    assert(g.login.totp.startsWith("otpauth://"), "otp field becomes TOTP");
+    assert(g.login.uris.length === 2, "KP2A_URL becomes an extra URI");
+    assert(g.fields.find((f) => f.name === "Security answer").type === 1, "protected field becomes hidden field");
+    assert(g.fields.find((f) => f.name === "Recovery email").type === 0, "plain field becomes text field");
+    assert(g.fields.find((f) => f.name === "Tags").value === "mail, important", "tags field");
+    assert(g.fields.find((f) => f.name === "Expires").value === "2031-05-06", "expiry field");
+    const j = conv.entries.find((e) => e.view.name === "Jira");
+    assert(j.view.login.username === "alice@gmail.com" && j.view.login.password === "gmail-pass-2", "field references resolved");
+    assert(j.view.login.totp.includes("period=60"), "KeePass TimeOtp with custom period");
+    assert(j.attachments.some((a) => a.fileName === "notes.txt") && j.view.notes.length < 7100, "long notes moved to attachment");
+    assert(j.attachments.some((a) => a.fileName === "Big field.txt"), "long field moved to attachment");
+    assert(conv.entries.some((e) => e.view.name === "root.example.net"), "untitled entry named after host");
+    let wrongPw = null;
+    try {
+        await keepass.openKeePass(kdbxBytes, "wrong");
+    } catch (e) {
+        wrongPw = e.message;
+    }
+    assert(wrongPw === "Wrong master password or key file", "wrong KeePass password is reported");
+
+    const xmlConv = keepass.convertKeePass(await keepass.openKeePass(fs.readFileSync(xmlPath), ""), {});
+    assert(xmlConv.entries.length === SAMPLE_ENTRIES, "XML export converts the same entries");
+    assert(xmlConv.entries.find((e) => e.view.name === "Gmail").view.fields.find((f) => f.name === "Security answer").type === 1, "XML protected field stays hidden");
+    assert(xmlConv.entries.find((e) => e.view.name === "Gmail").attachments.length === 2, "XML attachments");
+
+    // Import into a personal vault
+    const email = `import-${uid()}@example.com`;
+    const password = "import master password";
+    const { publicKey } = await register(base, email, password);
+    const { vault } = await login(base, email, password);
+    await vault.ensureFolderPath("Internet"); // an existing folder must be reused
+    const res = await importer.importEntries(vault, keepass.convertKeePass(opened, {}), { skipExisting: true });
+    assert(res.created === SAMPLE_ENTRIES && res.failed.length === 0, "all entries imported");
+    assert(res.attachments === 4, "all attachments uploaded");
+    assert([...vault.folders.values()].filter((f) => f.path === "Internet").length === 1, "existing folder reused, not duplicated");
+    const again = await importer.importEntries(vault, keepass.convertKeePass(opened, {}), { skipExisting: true });
+    assert(again.created === 0 && again.skipped === SAMPLE_ENTRIES, "re-import skips existing entries");
+
+    const bw = new BwCli(base, "import");
+    bw.login(email, password);
+    const items = bw.json(["list", "items"]);
+    const fmap = new Map(bw.json(["list", "folders"]).map((f) => [f.id, f.name]));
+    assert(items.length === SAMPLE_ENTRIES, "bw sees all imported items");
+    const bg = items.find((i) => i.name === "Gmail");
+    assert(fmap.get(bg.folderId) === "Internet/Mail", "bw: item in nested folder");
+    assert(bg.fields.find((f) => f.name === "Security answer").value === "blue whale", "bw: hidden field value");
+    assert(bg.passwordHistory[0].password === "old-password", "bw: password history");
+    assert(bg.attachments.length === 2, "bw: attachments present");
+    const out = bw.outDir("import");
+    const blob = bg.attachments.find((a) => a.fileName === "blob.bin");
+    bw.run(["get", "attachment", blob.id, "--itemid", bg.id, "--output", out + "/blob.bin"]);
+    const blobData = fs.readFileSync(out + "/blob.bin");
+    assert(blobData.length === 200000 && blobData[1000] === 1000 % 251, "bw: binary attachment content intact");
+    const bj = items.find((i) => i.name === "Jira");
+    bw.run(["get", "attachment", bj.attachments.find((a) => a.fileName === "notes.txt").id, "--itemid", bj.id, "--output", out + "/notes.txt"]);
+    assert(fs.readFileSync(out + "/notes.txt", "utf8") === "x".repeat(9000), "bw: full notes in attachment");
+    assert(bw.run(["get", "totp", bj.id]).length === 6, "bw: generates TOTP code for imported secret");
+
+    // Import into an organization
+    const orgId = await createOrg(vault, "Team", publicKey);
+    const orgRes = await importer.importEntries(vault, keepass.convertKeePass(opened, { targetFolder: "KeePass" }), { organizationId: orgId });
+    assert(orgRes.created === SAMPLE_ENTRIES && orgRes.failed.length === 0, "organization import");
+    bw.run(["sync"]);
+    const orgItems = bw.json(["list", "items", "--organizationid", orgId]);
+    assert(orgItems.length === SAMPLE_ENTRIES, "bw sees all organization items");
+    const cmap = new Map(bw.json(["list", "org-collections", "--organizationid", orgId]).map((x) => [x.id, x.name]));
+    const og = orgItems.find((i) => i.name === "Gmail");
+    assert(og.collectionIds.map((id) => cmap.get(id)).includes("KeePass/Internet/Mail"), "bw: org item in nested collection");
+    bw.run(["get", "attachment", og.attachments.find((a) => a.fileName === "readme.txt").id, "--itemid", og.id, "--output", out + "/readme.txt"]);
+    assert(fs.readFileSync(out + "/readme.txt", "utf8") === "hello attachment", "bw: org attachment content");
+}
