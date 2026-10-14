@@ -25,7 +25,8 @@ This is verified with the official Bitwarden CLI.
   security keys). Duo is not supported in the manager, use the Bitwarden web vault for that.
 * Single sign-on (OpenID Connect) when `SSO_ENABLED=true`. With `SSO_ONLY=true` the manager only offers
   SSO. After SSO you unlock the vault with your master password, see [sso-only.md](sso-only.md).
-* The vault locks after 15 minutes of inactivity (Tools → Options) and on <kbd>Ctrl</kbd>+<kbd>L</kbd>.
+* The vault locks after 15 minutes of inactivity (Tools → Options, also when the tab is hidden if you
+  want) and on <kbd>Ctrl</kbd>+<kbd>L</kbd>.
   Reloading the page also locks it; logging in again is only needed after logging out.
 
 New accounts created by single sign-on (or by the Keycloak directory sync) choose their master password
@@ -129,6 +130,36 @@ icons are stored next to the vault: one document for your own vault and one per 
 with your key or the organization key in the browser. Everyone with access to an organization sees its
 icons; managers, admins and owners can change them.
 
+## Windows
+
+Entries, the password generator and organizations open in **windows**, so you can keep several open next
+to each other while you keep working in the main window:
+
+* Drag a window by its title bar, resize it at its lower right corner. Every dialog can be moved this way.
+* **–** minimizes a window into the **taskbar** at the bottom, **□** (or a double-click on the title bar)
+  maximizes it. Click a window in the taskbar to bring it back or to minimize it; right-click it for more.
+* **Windows** menu: *Cascade*, *Tile*, *Side by side*, *Minimize all*, *Restore all*, *Close all*, and
+  a list of the open windows.
+* Opening an entry that is already open brings its window to the front.
+* The size of entry, generator and organization windows is remembered.
+* Keyboard shortcuts of the main window do not apply inside a window; <kbd>Esc</kbd> closes the window,
+  <kbd>Ctrl</kbd>+<kbd>L</kbd> locks everywhere. Locking closes all windows.
+
+Prefer one editor at a time? Switch off *Open entries in windows* in the options.
+
+## Options
+
+**Tools → Options** has most of what KeePassXC offers that makes sense in a browser:
+
+| Tab | Options |
+|---|---|
+| General | entries in windows, what a double-click on an entry does (KeePass behaviour, open, or open the URL), asking before moving to the trash, entries of sub folders, the folder shown after unlocking (last used, My vault, Favorites), how often changes from other devices are fetched, remembering the e-mail address |
+| Interface | theme, accent color, font size, row spacing (compact, normal, comfortable), toolbar (icons, icons and text, hidden), status bar, entry details, alternating row colors, grid lines, date format (ISO, browser, relative), website icons, monospace passwords, colored digits and special characters, hiding user names in the list, passwords in the list, hiding notes until clicked |
+| Security | clearing the clipboard (after a time and when locking), locking after inactivity, locking when the tab is hidden or the window minimized, showing passwords in the editor |
+| Search | searching passwords and protected fields, case sensitivity, only the selected folder, keeping the search when another folder is selected |
+
+*Defaults* resets them (columns and layout stay). The options are stored in this browser, per device.
+
 ## Dark mode
 
 The sun/moon button in the toolbar (and on the login page) switches between light and dark.
@@ -146,7 +177,8 @@ The sun/moon button in the toolbar (and on the login page) switches between ligh
 | <kbd>Ctrl</kbd>+<kbd>G</kbd> | Password generator | <kbd>F5</kbd> | Synchronize |
 | <kbd>Ctrl</kbd>+<kbd>L</kbd> | Lock | <kbd>F2</kbd> (tree) | Rename folder |
 
-Double-click a user name or password cell to copy it, a URL to open it, anything else to edit the entry.
+Double-click a user name or password cell to copy it, a URL to open it, anything else to edit the entry
+(this can be changed in the options).
 Custom fields are copied from the context menu (*Copy field*) or with the copy buttons in the details pane.
 The clipboard is cleared after 20 seconds (Tools → Options).
 

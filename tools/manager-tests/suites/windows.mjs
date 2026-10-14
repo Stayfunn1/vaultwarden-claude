@@ -174,6 +174,22 @@ export async function run({ base }) {
         await page.locator(".options-modal button", { hasText: "Defaults" }).click();
         await page.locator(".options-modal button.primary", { hasText: "OK" }).click();
         assert((await box(row("Alpha"))).height === 21, "defaults restored");
+
+        // Dark mode screenshot with two windows and the generator
+        await page.locator(".toolbar .theme-toggle").click();
+        for (const name of ["Alpha", "Charlie"]) {
+            await clickRow(name);
+            await page.keyboard.press("Enter");
+            await page.locator(".window", { hasText: `${name} – Edit Login` }).waitFor();
+        }
+        await page.locator(".menubar-item", { hasText: "Windows" }).click();
+        await page.locator(".menu-item", { hasText: "Password generator" }).click();
+        await page.locator(".window", { hasText: "Password Generator" }).waitFor();
+        await menu("Windows", "Tile");
+        await page.locator(".window", { hasText: "Charlie" }).locator("button[title=Minimize]").click();
+        await page.screenshot({ path: screenshotPath("43-windows-dark") });
+        await menu("Windows", "Close all");
+        await page.locator(".toolbar .theme-toggle").click();
         assert(errors.length === 0, `no browser errors (${errors.join(" | ")})`);
     } finally {
         await browser.close();

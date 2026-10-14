@@ -492,6 +492,9 @@ export const SHORTCUTS = [
     ["Double-click URL", "Open it"],
     ["Drag entries onto a folder", "Move them"],
     ["Drag a folder onto a folder", "Move the folder with all sub folders"],
+    ["Drag a title bar", "Move a window or dialog"],
+    ["Double-click a title bar", "Maximize or restore a window"],
+    ["Esc (in a window)", "Close the window"],
 ];
 
 export function shortcutsDialog() {
