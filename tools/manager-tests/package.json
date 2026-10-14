@@ -1,0 +1,17 @@
+{
+    "name": "vaultwarden-manager-tests",
+    "private": true,
+    "description": "End-to-end tests of the web manager, the KeePass import and SSO only mode, incl. compatibility checks with the official Bitwarden CLI",
+    "type": "module",
+    "scripts": {
+        "test": "node run.mjs",
+        "test:perf": "node run.mjs perf"
+    },
+    "devDependencies": {
+        "@bitwarden/cli": "2026.9.1",
+        "@xmldom/xmldom": "0.9.12",
+        "hash-wasm": "4.12.0",
+        "kdbxweb": "2.1.1",
+        "playwright": "1.60.0"
+    }
+}
