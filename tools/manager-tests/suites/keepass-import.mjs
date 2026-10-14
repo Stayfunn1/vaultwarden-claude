@@ -35,8 +35,11 @@ export async function buildSampleDb() {
     e1.fields.set("Password", P("old-password"));
     e1.fields.set("URL", "https://mail.google.com");
     e1.fields.set("Notes", "personal mail");
+    e1.times.creationTime = new Date("2015-03-04T05:06:07Z");
+    e1.times.lastModTime = new Date("2017-01-02T03:04:05Z");
     e1.pushHistory();
     e1.fields.set("Password", P("gmail-pass-2"));
+    e1.times.lastModTime = new Date("2019-08-09T10:11:12Z");
     e1.fields.set("Recovery email", "alice.backup@example.com");
     e1.fields.set("Security answer", P("blue whale"));
     e1.fields.set("otp", "otpauth://totp/Gmail:alice?secret=JBSWY3DPEHPK3PXP&issuer=Gmail");
@@ -62,6 +65,7 @@ export async function buildSampleDb() {
     e3.fields.set("Title", "");
     e3.fields.set("UserName", "root-user");
     e3.fields.set("URL", "https://root.example.net/path");
+    e3.times.creationTime = new Date("2099-01-01T00:00:00Z"); // a broken date in the future
 
     const trashed = db.createEntry(root);
     trashed.fields.set("Title", "Deleted entry");
@@ -74,6 +78,8 @@ export async function buildSampleDb() {
         e.fields.set("UserName", `user${i}`);
         e.fields.set("Password", P(`pw-${i}`));
         e.fields.set("Email", `user${i}@example.com`);
+        e.times.creationTime = new Date(Date.UTC(2012, 0, 1 + (i % 28)));
+        e.times.lastModTime = new Date(Date.UTC(2013, 5, 1 + (i % 28)));
     }
     return db;
 }
@@ -118,6 +124,11 @@ export async function run({ base }) {
     assert(conv.groupIcons.get("Internet")?.standard === 1, "group icon");
     assert(!conv.entries.find((e) => e.view.name === "Site 1").icon, "default icons are not stored");
     assert(keepass.convertKeePass(opened, { importIcons: false }).stats.icons === 0, "icons can be left out");
+    const gc = conv.entries.find((e) => e.view.name === "Gmail");
+    assert(gc.dates.created === "2015-03-04T05:06:07.000Z" && gc.dates.modified === "2019-08-09T10:11:12.000Z", "creation and modification date");
+    assert(gc.view.login.passwordRevisionDate === "2019-08-09T10:11:12.000Z", "date of the last password change from the history");
+    assert(!conv.entries.find((e) => e.view.name === "Site 1").view.login.passwordRevisionDate, "no password change date without history");
+    assert(!keepass.convertKeePass(opened, { importDates: false }).entries[0].dates, "dates can be left out");
     let wrongPw = null;
     try {
         await keepass.openKeePass(kdbxBytes, "wrong");
@@ -131,6 +142,7 @@ export async function run({ base }) {
     assert(xmlConv.entries.find((e) => e.view.name === "Gmail").view.fields.find((f) => f.name === "Security answer").type === 1, "XML protected field stays hidden");
     assert(xmlConv.entries.find((e) => e.view.name === "Gmail").attachments.length === 2, "XML attachments");
     assert(xmlConv.entries.find((e) => e.view.name === "Jira").icon?.image?.startsWith("data:image/png"), "XML custom icon");
+    assert(xmlConv.entries.find((e) => e.view.name === "Gmail").dates?.created === "2015-03-04T05:06:07.000Z", "XML dates");
 
     // Import into a personal vault
     const email = `import-${uid()}@example.com`;
@@ -150,6 +162,18 @@ export async function run({ base }) {
     assert(reloaded.itemIcon(byName("Jira"))?.image?.startsWith("data:image/png"), "custom icon of the imported entry");
     const internetFolder = [...vault.folders.values()].find((f) => f.path === "Internet");
     assert(reloaded.groupIcon(internetFolder.id, null)?.standard === 1, "icon of the imported folder");
+    const iso = (d) => (d ? new Date(d).toISOString() : null);
+    assert(iso(byName("Gmail").creationDate) === "2015-03-04T05:06:07.000Z" && iso(byName("Gmail").revisionDate) === "2019-08-09T10:11:12.000Z", "dates kept for an entry with attachments");
+    assert(iso(byName("Site 3").creationDate) === "2012-01-04T00:00:00.000Z" && iso(byName("Site 3").revisionDate) === "2013-06-04T00:00:00.000Z", "dates kept for entries of the bulk import");
+    assert(byName("Gmail").login.passwordRevisionDate?.startsWith("2019-08-09"), "password change date kept");
+    const future = byName("root.example.net");
+    assert(new Date(future.creationDate) <= new Date() && new Date(future.revisionDate) >= new Date(future.creationDate), "dates in the future are not accepted");
+    // A normal update can not change the dates
+    const gmailView = byName("Gmail");
+    const req = await vault.encryptCipher(gmailView);
+    await vault.api.put(`/api/ciphers/${gmailView.id}`, { ...req, creationDate: "2000-01-01T00:00:00Z", revisionDate: "2000-01-01T00:00:00Z" });
+    await vault.sync();
+    assert(iso(byName("Gmail").creationDate) === "2015-03-04T05:06:07.000Z" && new Date(byName("Gmail").revisionDate) > new Date("2020-01-01"), "dates sent with an update are ignored, the update gets the current time");
     const stored = await vault.api.get("/api/manager/icons");
     assert(stored.personal.data.startsWith("2.") && !stored.personal.data.includes("data:image"), "icons are stored encrypted");
     assert(res.attachments === 4, "all attachments uploaded");
@@ -167,6 +191,9 @@ export async function run({ base }) {
     assert(bg.fields.find((f) => f.name === "Security answer").value === "blue whale", "bw: hidden field value");
     assert(bg.passwordHistory[0].password === "old-password", "bw: password history");
     assert(bg.attachments.length === 2, "bw: attachments present");
+    assert(iso(bg.creationDate) === "2015-03-04T05:06:07.000Z", "bw: original creation date");
+    const site = items.find((i) => i.name === "Site 3");
+    assert(iso(site.creationDate) === "2012-01-04T00:00:00.000Z" && iso(site.revisionDate) === "2013-06-04T00:00:00.000Z", "bw: original creation and revision date");
     const out = bw.outDir("import");
     const blob = bg.attachments.find((a) => a.fileName === "blob.bin");
     bw.run(["get", "attachment", blob.id, "--itemid", bg.id, "--output", out + "/blob.bin"]);
@@ -183,6 +210,7 @@ export async function run({ base }) {
     assert(orgRes.created === SAMPLE_ENTRIES && orgRes.failed.length === 0, "organization import");
     await reloaded.load();
     assert(reloaded.itemIcon(byName("Gmail", orgId))?.standard === 19, "organization entry icon");
+    assert(iso(byName("Gmail", orgId).creationDate) === "2015-03-04T05:06:07.000Z" && iso(byName("Site 3", orgId).revisionDate) === "2013-06-04T00:00:00.000Z", "organization import keeps the dates");
     assert(reloaded.itemIcon(byName("Gmail"))?.standard === 19, "personal icons kept");
     bw.run(["sync"]);
     const orgItems = bw.json(["list", "items", "--organizationid", orgId]);

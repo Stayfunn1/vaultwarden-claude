@@ -94,6 +94,11 @@ export async function importEntries(vault, converted, options = {}, onProgress =
         view.folderId = organizationId ? null : containerFor(entry);
         const cipherKey = SymmetricKey.generate();
         const req = await vault.encryptCipher(view, { organizationId, cipherKey });
+        // The original dates of the entry (Vaultwarden keeps them for new items)
+        if (entry.dates) {
+            req.creationDate = entry.dates.created || entry.dates.modified;
+            req.revisionDate = entry.dates.modified || entry.dates.created;
+        }
         if (++done % 25 === 0 || done === entries.length) onProgress({ phase: "Encrypting", done, total: entries.length });
         return { entry, req, cipherKey, containerId: containerFor(entry) };
     });

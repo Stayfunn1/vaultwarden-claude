@@ -9,7 +9,7 @@ extension and desktop app. That is the proof that everything the manager writes 
 | Suite | What it checks |
 |---|---|
 | `interop` | Items, custom fields, TOTP, URIs, attachments, history, folder moves and sharing written by the manager decrypt in `bw`, and items written by `bw` decrypt and stay intact when edited in the manager (PBKDF2 and Argon2id accounts) |
-| `keepass-import` | `.kdbx` and KeePass XML conversion (groups, protected fields, attachments, TOTP variants, references, history, long notes, standard and custom icons), import into a personal vault and into an organization, re-import skipping existing entries, encrypted icon storage |
+| `keepass-import` | `.kdbx` and KeePass XML conversion (groups, protected fields, attachments, TOTP variants, references, history, long notes, standard and custom icons, creation, modification and password change dates), import into a personal vault and into an organization, re-import skipping existing entries, encrypted icon storage, dates checked with `bw` |
 | `regressions` | Data safety rules: password history on retried saves, rejected server-injected values, read-only incomplete SSH keys, background sync vs. running operations, all-or-nothing import entries, editing restored items |
 | `ui` | The UI in Chromium: folder tree, editor, drag & drop of entries and folder trees, rename, search, trash, lock, KeePass import with icons, changing icons, TOTP two-step login, attachments, sharing by drag & drop |
 | `orgs` | Organizations in the manager: create, invite, confirm (key exchange), roles, groups, collection access, revoke, restore, remove; dark mode switch |

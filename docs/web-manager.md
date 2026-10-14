@@ -56,11 +56,17 @@ What is imported, and how:
 | Attachments                                    | Attachments (encrypted)                                                 |
 | TOTP (`otp`, KeePass 2.47+ `TimeOtp-*`, `TOTP Seed`) | Authenticator key (TOTP), incl. custom period/digits/algorithm and Steam |
 | History                                        | Password history (last 5 different passwords)                           |
+| Creation and last modification date           | *Created* and *Modified* date of the item, in the manager and the Bitwarden apps (optional) |
+| Time of the last password change (from the history) | *Password updated* date                                          |
 | Tags / expiry date                             | Custom fields `Tags` / `Expires` (optional)                             |
 | Field references `{REF:U@I:…}`                 | Replaced by the referenced value (Bitwarden has no references)          |
 | Recycle bin                                    | Skipped (optional)                                                       |
 | Group names containing `/`                     | `/` is replaced by `∕`, otherwise it would create extra nesting         |
 | Icons of entries and groups (standard and custom) | Icons in the manager (optional), see [Icons](#icons)                 |
+
+The original dates are kept because this fork accepts them when items are created by an import; the
+official Vaultwarden would show the date of the import instead. Changes made later get the current time
+as usual, and dates in the future are not accepted.
 
 Bitwarden limits notes to about 7,500 characters and custom fields to a few thousand. Longer values
 are not cut off: they are stored completely as a `.txt` attachment (e.g. `notes.txt`) and the note

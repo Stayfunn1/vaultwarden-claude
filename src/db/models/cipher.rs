@@ -435,6 +435,26 @@ impl Cipher {
         user_uuids
     }
 
+    /// Sets the creation and revision date, for imported items which keep their original dates.
+    /// `save()` always sets the revision date to now, so this is called after it.
+    pub async fn set_dates(
+        &mut self,
+        created_at: NaiveDateTime,
+        updated_at: NaiveDateTime,
+        conn: &DbConn,
+    ) -> EmptyResult {
+        self.created_at = created_at;
+        self.updated_at = updated_at;
+        let uuid = self.uuid.clone();
+        conn.run(move |conn| {
+            diesel::update(ciphers::table.filter(ciphers::uuid.eq(uuid)))
+                .set((ciphers::created_at.eq(created_at), ciphers::updated_at.eq(updated_at)))
+                .execute(conn)
+                .map_res("Error saving the dates of the cipher")
+        })
+        .await
+    }
+
     pub async fn save(&mut self, conn: &DbConn) -> EmptyResult {
         self.update_users_revision(conn).await;
         self.updated_at = Utc::now().naive_utc();
