@@ -84,12 +84,36 @@ export function icon(name, cls = "") {
 
 // ----- Formatting -------------------------------------------------------------------------------
 
+const relativeTime = typeof Intl !== "undefined" && Intl.RelativeTimeFormat ? new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }) : null;
+
+// Dates in the format chosen in the options: ISO (2026-10-14 16:29), the format of the browser, or relative
 export function formatDate(iso) {
     if (!iso) return "";
     const d = new Date(iso);
     if (isNaN(d)) return "";
+    if (settings.dateFormat === "locale") return d.toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
+    if (settings.dateFormat === "relative" && relativeTime) {
+        const secs = Math.round((d.getTime() - Date.now()) / 1000);
+        const abs = Math.abs(secs);
+        if (abs < 60) return relativeTime.format(0, "second");
+        if (abs < 3600) return relativeTime.format(Math.round(secs / 60), "minute");
+        if (abs < 86400) return relativeTime.format(Math.round(secs / 3600), "hour");
+        if (abs < 30 * 86400) return relativeTime.format(Math.round(secs / 86400), "day");
+        if (abs < 365 * 86400) return relativeTime.format(Math.round(secs / (30 * 86400)), "month");
+        return relativeTime.format(Math.round(secs / (365 * 86400)), "year");
+    }
     const pad = (n) => String(n).padStart(2, "0");
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// A password with digits and special characters colored (KeePassXC style), as DOM nodes
+export function colorizedPassword(text) {
+    const frag = document.createDocumentFragment();
+    for (const ch of String(text)) {
+        const cls = /[0-9]/.test(ch) ? "pw-digit" : /[A-Za-z]/.test(ch) ? "" : "pw-special";
+        frag.appendChild(cls ? h("span", { class: cls }, ch) : document.createTextNode(ch));
+    }
+    return frag;
 }
 
 export function formatBytes(n) {
@@ -112,7 +136,7 @@ export function firstLine(text, max = 120) {
 // ----- Settings (per browser) ---------------------------------------------------------------------
 
 const SETTINGS_KEY = "vwm.settings";
-const DEFAULT_SETTINGS = {
+export const DEFAULT_SETTINGS = {
     columns: ["name", "username", "password", "uri", "notes", "modified"],
     widths: {},
     sort: { key: "name", dir: 1 },
@@ -125,7 +149,90 @@ const DEFAULT_SETTINGS = {
     detailsHeight: 190,
     rememberEmail: true,
     email: "",
+    // General
+    entryWindows: true, // entries open in windows, several at once
+    dblClickAction: "field", // field (copy the clicked user name / password, open the URL), edit, url
+    startFolder: "last", // vault, last, favorites
+    checkMinutes: 5, // look for changes from other devices
+    confirmDelete: true,
+    // Interface
+    fontSize: 12,
+    density: "normal", // compact, normal, comfortable
+    accent: "blue",
+    toolbar: "icons", // icons, text, hidden
+    showStatusBar: true,
+    stripedRows: true,
+    gridLines: false,
+    dateFormat: "iso", // iso, locale, relative
+    monoPasswords: true,
+    colorPasswords: false,
+    hideUsernames: false,
+    showPasswordsInList: false,
+    hideNotes: false,
+    websiteIcons: false,
+    // Security
+    lockOnHide: false,
+    lockOnHideSeconds: 0,
+    clearClipboardOnLock: true,
+    editorShowPasswords: false,
+    // Search
+    searchPasswords: false,
+    searchCase: false,
+    searchInFolder: false,
+    clearSearchOnFolder: true,
+    windowSizes: {},
 };
+
+// The settings of the Options dialog (the others are layout, columns and similar)
+export const OPTION_KEYS = [
+    "clipboardSeconds", "lockMinutes", "theme", "rememberEmail", "entryWindows", "dblClickAction", "startFolder", "checkMinutes",
+    "confirmDelete", "fontSize", "density", "accent", "toolbar", "showStatusBar", "stripedRows", "gridLines", "dateFormat",
+    "monoPasswords", "colorPasswords", "hideUsernames", "showPasswordsInList", "hideNotes", "lockOnHide", "lockOnHideSeconds",
+    "clearClipboardOnLock", "editorShowPasswords", "searchPasswords", "searchCase", "searchInFolder", "clearSearchOnFolder",
+    "showDetails", "showSubfolderEntries", "websiteIcons",
+];
+
+// Accent colors: [light theme, dark theme]
+export const ACCENTS = {
+    blue: ["#0063b1", "#4aa3ff"],
+    teal: ["#00788a", "#3fc1d1"],
+    green: ["#107c10", "#5cc65c"],
+    purple: ["#7a3fc4", "#b48cf2"],
+    pink: ["#b4246b", "#f07ab3"],
+    orange: ["#b55400", "#f0a050"],
+    red: ["#c42b1c", "#ff7b6b"],
+    graphite: ["#4b5563", "#a3adbb"],
+};
+
+const DENSITY_EXTRA = { compact: 6, normal: 9, comfortable: 14 };
+
+export function fontSize() {
+    return Math.min(18, Math.max(10, Number(settings.fontSize) || 12));
+}
+
+// Height of the rows of the entry list, in pixels
+export function rowHeight() {
+    return fontSize() + (DENSITY_EXTRA[settings.density] ?? DENSITY_EXTRA.normal);
+}
+
+// Applies the interface options (font size, density, accent color, toolbar, ...) to the page
+export function applyAppearance() {
+    const root = document.documentElement;
+    root.style.setProperty("--fs", `${fontSize()}px`);
+    root.style.setProperty("--row-h", `${rowHeight()}px`);
+    const accent = ACCENTS[settings.accent];
+    root.classList.toggle("custom-accent", !!accent && settings.accent !== "blue");
+    if (accent) {
+        root.style.setProperty("--accent-l", accent[0]);
+        root.style.setProperty("--accent-d", accent[1]);
+    }
+    root.classList.toggle("toolbar-text", settings.toolbar === "text");
+    root.classList.toggle("toolbar-hidden", settings.toolbar === "hidden");
+    root.classList.toggle("no-statusbar", settings.showStatusBar === false);
+    root.classList.toggle("no-stripes", settings.stripedRows === false);
+    root.classList.toggle("grid-lines", !!settings.gridLines);
+    root.classList.toggle("no-mono-passwords", settings.monoPasswords === false);
+}
 
 export const settings = (() => {
     let data = { ...DEFAULT_SETTINGS };
@@ -177,6 +284,16 @@ let clipTimer = null;
 let clipCountdown = null;
 export const clipboardState = { onTick: null };
 
+// Clears the clipboard now if something copied here is still waiting to be cleared (used when locking)
+export function clearClipboardNow() {
+    if (!clipTimer) return;
+    clearTimeout(clipTimer);
+    clearInterval(clipCountdown);
+    clipTimer = null;
+    if (clipboardState.onTick) clipboardState.onTick(null);
+    navigator.clipboard.writeText("").catch(() => {});
+}
+
 export async function copyText(text, label = "Value") {
     if (text === null || text === undefined || text === "") {
         toast(`${label} is empty`, "warn");
@@ -206,6 +323,7 @@ export async function copyText(text, label = "Value") {
             if (left <= 0) clearInterval(clipCountdown);
         }, 1000);
         clipTimer = setTimeout(() => {
+            clipTimer = null;
             navigator.clipboard.writeText("").catch(() => {});
         }, secs * 1000);
     }
@@ -317,44 +435,275 @@ document.addEventListener("mousedown", (e) => {
 window.addEventListener("blur", closeMenus);
 window.addEventListener("resize", closeMenus);
 
-// ----- Modal dialogs --------------------------------------------------------------------------------
+// ----- Dialogs and windows ---------------------------------------------------------------------------
+//
+// Dialogs are modal (they block the main window), unless they are opened with `window: true`: windows float
+// above the main window, any number of them can be open at once, and they can be moved, resized, minimized
+// and maximized like on a desktop. Modal dialogs can be moved by their title bar too.
 
-const dialogStack = [];
+const dialogStack = []; // close functions of the open modal dialogs
+const openWindows = []; // see listWindows()
+const windowListeners = new Set();
+let windowLayer = null;
+let zCounter = 10;
+let cascadeIndex = 0;
 
 export function isDialogOpen() {
     return dialogStack.length > 0;
 }
 
-export function closeAllDialogs() {
-    for (const close of [...dialogStack].reverse()) close(undefined);
+// True for elements inside a window, the keyboard shortcuts of the main window do not apply there
+export function isInWindow(el) {
+    return !!el?.closest?.(".window");
 }
 
-// Opens a modal. `build(close)` returns { body, buttons, onOpen, onEnter, onCancel, initialFocus }.
-// `onCancel` replaces the default of Esc and the close button (closing without a value).
+export function closeAllDialogs() {
+    for (const close of [...dialogStack].reverse()) close(undefined);
+    for (const w of [...openWindows].reverse()) w.close(undefined);
+}
+
+// Calls fn whenever windows are opened, closed, activated, minimized or renamed. Returns a function to stop.
+export function onWindowsChanged(fn) {
+    windowListeners.add(fn);
+    return () => windowListeners.delete(fn);
+}
+
+function windowsChanged() {
+    for (const fn of windowListeners) fn();
+}
+
+// The open windows in the order they were opened:
+// { key, kind, title, icon, minimized, maximized, active, restore(), minimize(), toggleMaximize(), cancel(), close() }
+export function listWindows() {
+    return [...openWindows];
+}
+
+// Shows the open window with this key. Returns false when there is none.
+export function focusWindow(key) {
+    const w = key ? openWindows.find((x) => x.key === key) : null;
+    if (!w) return false;
+    w.restore();
+    return true;
+}
+
+function windowArea() {
+    if (!windowLayer || !windowLayer.isConnected) {
+        windowLayer = h("div", { class: "window-layer" });
+        document.body.appendChild(windowLayer);
+    }
+    return windowLayer;
+}
+
+function raiseWindow(win) {
+    win.box.style.zIndex = String(++zCounter);
+    markActive(win);
+}
+
+function markActive(active) {
+    for (const w of openWindows) {
+        w.active = w === active;
+        w.box.classList.toggle("active", w.active);
+    }
+    windowsChanged();
+}
+
+// After a window was closed or minimized the top most visible window becomes the active one
+function activateTopWindow() {
+    const visible = openWindows.filter((w) => !w.minimized);
+    visible.sort((a, b) => Number(b.box.style.zIndex) - Number(a.box.style.zIndex));
+    markActive(visible[0] || null);
+}
+
+function placeWithin(box, x, y) {
+    const area = box.offsetParent?.getBoundingClientRect() || { width: globalThis.innerWidth, height: globalThis.innerHeight };
+    const w = box.offsetWidth;
+    box.style.left = `${Math.round(Math.min(Math.max(x, 60 - w), area.width - 60))}px`;
+    box.style.top = `${Math.round(Math.min(Math.max(y, 0), area.height - 28))}px`;
+}
+
+// Moves a dialog or window by dragging its title bar (mouse, pen or touch)
+function enableDrag(box, handle, canDrag) {
+    handle.addEventListener("pointerdown", (e) => {
+        if (e.button !== 0 || e.target.closest("button") || !canDrag()) return;
+        const parent = box.offsetParent?.getBoundingClientRect() || { left: 0, top: 0 };
+        const r = box.getBoundingClientRect();
+        const dx = e.clientX - r.left;
+        const dy = e.clientY - r.top;
+        // A centered modal becomes freely positioned once it is dragged
+        box.classList.add("placed");
+        placeWithin(box, r.left - parent.left, r.top - parent.top);
+        handle.setPointerCapture(e.pointerId);
+        const move = (ev) => placeWithin(box, ev.clientX - dx - parent.left, ev.clientY - dy - parent.top);
+        const up = () => {
+            handle.removeEventListener("pointermove", move);
+            handle.removeEventListener("pointerup", up);
+            handle.removeEventListener("pointercancel", up);
+        };
+        handle.addEventListener("pointermove", move);
+        handle.addEventListener("pointerup", up);
+        handle.addEventListener("pointercancel", up);
+        e.preventDefault();
+    });
+}
+
+// Arranges the visible windows: "cascade", "tile" (a grid) or "side" (side by side in one row)
+export function arrangeWindows(mode) {
+    const wins = openWindows.filter((w) => !w.minimized);
+    if (!wins.length) return;
+    const area = windowArea().getBoundingClientRect();
+    for (const w of wins) if (w.maximized) w.toggleMaximize();
+    if (mode === "cascade") {
+        wins.forEach((w, i) => {
+            w.arranged = false;
+            w.box.style.width = "";
+            w.box.style.height = "";
+            w.applySavedSize();
+            placeWithin(w.box, 20 + (i % 10) * 28, 12 + (i % 10) * 28);
+            raiseWindow(w);
+        });
+        return;
+    }
+    const cols = mode === "side" ? wins.length : Math.ceil(Math.sqrt(wins.length));
+    const rows = Math.ceil(wins.length / cols);
+    const cw = Math.floor(area.width / cols);
+    const rh = Math.floor(area.height / rows);
+    wins.forEach((w, i) => {
+        const c = i % cols;
+        const r = Math.floor(i / cols);
+        Object.assign(w.box.style, { left: `${c * cw}px`, top: `${r * rh}px`, width: `${cw}px`, height: `${rh}px` });
+        // Tiled sizes are not remembered as the size of the kind of window
+        w.arranged = true;
+    });
+}
+
+// Opens a dialog. `build(close, win)` returns { body, buttons, onOpen, onEnter, onCancel, initialFocus };
+// `win` offers setTitle(text) and setKey(key). `onCancel` replaces the default of Esc and the close button
+// (closing without a value).
+// Options: `window` opens a non modal window, `key` identifies it (see focusWindow), `kind` remembers its size,
+// `icon` is shown in its title bar and the taskbar.
 // Returns a promise resolving with the value passed to close().
-export function dialog({ title, className = "", build, width }) {
+export function dialog({ title, className = "", build, width, window: asWindow = false, key = null, kind = null, icon: titleIcon = null }) {
     return new Promise((resolve) => {
-        const backdrop = h("div", { class: "modal-backdrop" });
-        const box = h("div", { class: `modal ${className}`, role: "dialog", "aria-modal": "true", "aria-label": title });
+        const box = h("div", { class: `modal ${className}${asWindow ? " window" : ""}`, role: "dialog", "aria-modal": asWindow ? "false" : "true", "aria-label": title });
         if (width) box.style.width = width;
+        const backdrop = asWindow ? null : h("div", { class: "modal-backdrop" });
+        let win = null;
         let closed = false;
+        const previousFocus = document.activeElement;
         const close = (value) => {
             if (closed) return;
             closed = true;
-            backdrop.remove();
-            dialogStack.splice(dialogStack.indexOf(close), 1);
-            if (previousFocus && previousFocus.focus) previousFocus.focus();
+            (backdrop || box).remove();
+            if (win) {
+                openWindows.splice(openWindows.indexOf(win), 1);
+                activateTopWindow();
+            } else {
+                dialogStack.splice(dialogStack.indexOf(close), 1);
+            }
+            if (previousFocus?.focus && previousFocus.isConnected) previousFocus.focus();
             resolve(value);
         };
-        const previousFocus = document.activeElement;
-        const parts = build(close);
+        const titleText = h("span", { class: "modal-title-text" }, title);
+        const control = {
+            setTitle(text) {
+                titleText.textContent = text;
+                box.setAttribute("aria-label", text);
+                if (win) {
+                    win.title = text;
+                    windowsChanged();
+                }
+            },
+            setKey(k) {
+                if (win) win.key = k;
+            },
+        };
+        const parts = build(close, control);
         const cancel = () => (parts.onCancel ? parts.onCancel() : close(undefined));
-        const titleBar = h("div", { class: "modal-title" }, h("span", null, title), h("button", { class: "modal-x", type: "button", title: "Close", "aria-label": "Close", onclick: cancel }, "×"));
+        const buttons = [];
+        let maxBtn = null;
+        if (asWindow) {
+            maxBtn = h("button", { class: "modal-ctl", type: "button", title: "Maximize", "aria-label": "Maximize", onclick: () => win.toggleMaximize() }, "□");
+            buttons.push(h("button", { class: "modal-ctl", type: "button", title: "Minimize", "aria-label": "Minimize", onclick: () => win.minimize() }, "–"), maxBtn);
+        }
+        buttons.push(h("button", { class: "modal-x", type: "button", title: "Close", "aria-label": "Close", onclick: cancel }, "×"));
+        const titleBar = h("div", { class: "modal-title" }, titleIcon ? h("span", { class: "modal-title-icon" }, titleIcon.cloneNode(true)) : "", titleText, h("span", { class: "modal-controls" }, buttons));
         const footer = parts.buttons ? h("div", { class: "modal-buttons" }, parts.buttons) : null;
         box.append(titleBar, h("div", { class: "modal-body" }, parts.body), footer || "");
-        backdrop.appendChild(box);
-        document.body.appendChild(backdrop);
-        dialogStack.push(close);
+        enableDrag(box, titleBar, () => !win?.maximized);
+
+        if (asWindow) {
+            win = {
+                key,
+                kind,
+                title,
+                icon: titleIcon,
+                box,
+                minimized: false,
+                maximized: false,
+                active: false,
+                restore() {
+                    win.minimized = false;
+                    box.hidden = false;
+                    raiseWindow(win);
+                    if (!box.contains(document.activeElement)) (parts.initialFocus || box.querySelector("input, select, textarea, button"))?.focus();
+                },
+                minimize() {
+                    win.minimized = true;
+                    box.hidden = true;
+                    activateTopWindow();
+                },
+                toggleMaximize() {
+                    win.maximized = !win.maximized;
+                    box.classList.toggle("maximized", win.maximized);
+                    maxBtn.textContent = win.maximized ? "❐" : "□";
+                    maxBtn.title = win.maximized ? "Restore" : "Maximize";
+                    windowsChanged();
+                },
+                applySavedSize() {
+                    const size = kind ? settings.windowSizes?.[kind] : null;
+                    if (size) {
+                        box.style.width = `${size.w}px`;
+                        box.style.height = `${size.h}px`;
+                    }
+                },
+                cancel,
+                close,
+            };
+            titleBar.addEventListener("dblclick", (e) => {
+                if (!e.target.closest("button")) win.toggleMaximize();
+            });
+            box.addEventListener("pointerdown", () => {
+                if (!win.active) raiseWindow(win);
+            }, true);
+            box.addEventListener("focusin", () => {
+                if (!win.active) raiseWindow(win);
+            });
+            win.applySavedSize();
+            windowArea().appendChild(box);
+            const area = windowArea().getBoundingClientRect();
+            const step = 28;
+            const n = cascadeIndex++ % 8;
+            placeWithin(box, (area.width - box.offsetWidth) / 2 - 3 * step + n * step, Math.max(8, (area.height - box.offsetHeight) / 2 - 3 * step + n * step));
+            openWindows.push(win);
+            raiseWindow(win);
+            // The size of a kind of window is remembered (not while maximized)
+            if (kind && typeof ResizeObserver !== "undefined") {
+                let timer;
+                new ResizeObserver(() => {
+                    // Only sizes chosen by the user (not maximized, tiled or hidden windows)
+                    if (win.maximized || win.minimized || win.arranged || !box.style.width) return;
+                    const size = { w: box.offsetWidth, h: box.offsetHeight };
+                    if (!size.w || !size.h) return;
+                    clearTimeout(timer);
+                    timer = setTimeout(() => (settings.windowSizes = { ...(settings.windowSizes || {}), [kind]: size }), 300);
+                }).observe(box);
+            }
+        } else {
+            backdrop.appendChild(box);
+            document.body.appendChild(backdrop);
+            dialogStack.push(close);
+        }
+
         box.addEventListener("keydown", (e) => {
             if (e.key === "Escape") {
                 e.stopPropagation();
@@ -363,11 +712,11 @@ export function dialog({ title, className = "", build, width }) {
                 e.preventDefault();
                 e.stopPropagation();
                 parts.onEnter();
-            } else if (e.key === "Tab") {
+            } else if (e.key === "Tab" && !asWindow) {
                 trapFocus(box, e);
             }
         });
-        const focusEl = parts.initialFocus || box.querySelector("input:not([type=hidden]), select, textarea, button.primary, button");
+        const focusEl = parts.initialFocus || box.querySelector("input:not([type=hidden]), select, textarea, button.primary, button:not(.modal-ctl):not(.modal-x)");
         setTimeout(() => focusEl?.focus(), 0);
         if (parts.onOpen) parts.onOpen();
     });

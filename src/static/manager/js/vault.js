@@ -1086,7 +1086,7 @@ export class Vault {
 
     // ----- Search -------------------------------------------------------------------------
 
-    static matches(view, terms, { searchPasswords = false } = {}) {
+    static matches(view, terms, { searchPasswords = false, caseSensitive = false } = {}) {
         const hay = [view.name, view.notes];
         if (view.login) {
             hay.push(view.login.username);
@@ -1103,7 +1103,8 @@ export class Vault {
             if (f.type !== FieldType.Hidden || searchPasswords) hay.push(f.value);
         }
         for (const a of view.attachments || []) hay.push(a.fileName);
-        const text = hay.filter((x) => typeof x === "string").join("\n").toLowerCase();
+        const joined = hay.filter((x) => typeof x === "string").join("\n");
+        const text = caseSensitive ? joined : joined.toLowerCase();
         return terms.every((t) => text.includes(t));
     }
 }

@@ -24,6 +24,7 @@ import {
 import {
     h, icon, clear, settings, saveSettings, toast, copyText, clipboardState, showMenu, closeMenus, dialog, confirmDialog, promptDialog,
     alertDialog, progressDialog, isDialogOpen, closeAllDialogs, formatDate, formatBytes, downloadBlob, safeUrl,
+    isInWindow, onWindowsChanged, listWindows, focusWindow, arrangeWindows, applyAppearance, clearClipboardNow, colorizedPassword,
 } from "./ui.js";
 import { TreeView, ciphersForNode, folderKey, collectionKey } from "./tree.js";
 import { EntryTable, COLUMNS, typeIcon } from "./table.js";
@@ -121,6 +122,7 @@ class App {
 
     async start() {
         applyTheme();
+        applyAppearance();
         try {
             const res = await fetch("config.json");
             if (res.ok) this.config = { ...this.config, ...(await res.json()) };
@@ -544,6 +546,7 @@ class App {
 
     lock() {
         if (!this.vault.userKey) return;
+        if (settings.clearClipboardOnLock !== false) clearClipboardNow();
         this.icons = null;
         closeMenus();
         // Close open dialogs, their data is about to be wiped
@@ -565,11 +568,26 @@ class App {
             }
         }, 15_000);
         window.addEventListener("focus", () => this.checkForUpdates());
-        setInterval(() => this.checkForUpdates(), 5 * 60_000);
+        // Changes from other devices: every few minutes (Tools → Options)
+        this.lastCheck = Date.now();
+        setInterval(() => {
+            const mins = Number(settings.checkMinutes) || 0;
+            if (mins > 0 && Date.now() - this.lastCheck >= mins * 60_000) this.checkForUpdates();
+        }, 30_000);
+        // Lock when the tab is hidden or the window minimized (Tools → Options)
+        document.addEventListener("visibilitychange", () => {
+            clearTimeout(this._hideLockTimer);
+            if (document.visibilityState !== "hidden" || !settings.lockOnHide || !this.vault.userKey) return;
+            const secs = Math.max(0, Number(settings.lockOnHideSeconds) || 0);
+            this._hideLockTimer = setTimeout(() => {
+                if (document.visibilityState === "hidden" && this.vault.userKey && !this.busy) this.lock();
+            }, secs * 1000);
+        });
     }
 
     async checkForUpdates() {
         if (!this.vault.userKey || this.busy || isDialogOpen()) return;
+        this.lastCheck = Date.now();
         try {
             const rev = await this.api.get("/api/accounts/revision-date");
             if (this.lastRevision !== null && rev !== this.lastRevision) {
@@ -601,7 +619,73 @@ class App {
         this.buildMain();
         await this.loadTreeState();
         this.refresh();
+        await this.selectStartFolder();
         this.checkPendingConfirmations();
+    }
+
+    // ----- Windows ---------------------------------------------------------------------------------
+
+    // One button per open window, like the taskbar of a desktop
+    renderTaskbar() {
+        const bar = this.taskbar;
+        if (!bar?.isConnected) return;
+        const wins = listWindows();
+        clear(bar);
+        bar.hidden = wins.length === 0;
+        for (const w of wins) {
+            const btn = h(
+                "button",
+                {
+                    type: "button",
+                    class: `task${w.active && !w.minimized ? " active" : ""}${w.minimized ? " minimized" : ""}`,
+                    title: w.title,
+                    onclick: () => (w.minimized || !w.active ? w.restore() : w.minimize()),
+                },
+                w.icon ? w.icon.cloneNode(true) : icon("generic"),
+                h("span", null, w.title),
+            );
+            btn.addEventListener("contextmenu", (e) => {
+                e.preventDefault();
+                showMenu(
+                    [
+                        { label: "Restore", action: () => w.restore(), disabled: !w.minimized && !w.maximized },
+                        { label: "Minimize", action: () => w.minimize(), disabled: w.minimized },
+                        { label: w.maximized ? "Restore size" : "Maximize", action: () => (w.minimized ? (w.restore(), w.toggleMaximize()) : w.toggleMaximize()) },
+                        "-",
+                        { label: "Close", action: () => w.cancel() },
+                    ],
+                    e.clientX,
+                    e.clientY,
+                );
+            });
+            bar.appendChild(btn);
+        }
+        // Windows (also maximized ones) leave the menu bar, the taskbar and the status bar visible
+        const bottom = (bar.hidden ? 0 : bar.offsetHeight) + (this.statusbar?.offsetHeight || 0);
+        document.documentElement.style.setProperty("--window-bottom", `${bottom}px`);
+        document.documentElement.style.setProperty("--window-top", `${this.menubar?.offsetHeight || 0}px`);
+    }
+
+    windowMenuItems() {
+        const wins = listWindows();
+        const none = !wins.length;
+        const items = [
+            { label: "Cascade", action: () => arrangeWindows("cascade"), disabled: none },
+            { label: "Tile", action: () => arrangeWindows("tile"), disabled: none },
+            { label: "Side by side", action: () => arrangeWindows("side"), disabled: none },
+            "-",
+            { label: "Minimize all", action: () => wins.forEach((w) => w.minimize()), disabled: none },
+            { label: "Restore all", action: () => wins.forEach((w) => w.restore()), disabled: none },
+            { label: "Close all", action: () => wins.forEach((w) => w.cancel()), disabled: none },
+            "-",
+            { label: "Password generator", icon: "key", shortcut: "Ctrl+G", action: () => this.openGenerator() },
+        ];
+        if (wins.length) items.push("-", ...wins.map((w) => ({ label: w.minimized ? `${w.title} (minimized)` : w.title, checked: w.active && !w.minimized, action: () => w.restore() })));
+        return items;
+    }
+
+    openGenerator() {
+        if (!focusWindow("generator")) generatorDialog({ standalone: true });
     }
 
     // ----- Icons -----------------------------------------------------------------------------------
@@ -714,6 +798,7 @@ class App {
         if (!this.vault.orgKeys.has(orgId)) {
             return alertDialog("Organization", "Your membership in this organization is not confirmed yet, so its data can not be decrypted here.");
         }
+        if (focusWindow(`org:${orgId}`)) return;
         const changed = await organizationDialog(this, orgId, tab);
         if (changed) await this.sync(true);
         this.checkPendingConfirmations();
@@ -743,6 +828,41 @@ class App {
     // stored encrypted with the account key, like everything else of the vault.
     treeStateKey() {
         return `vwm.tree.${this.vault.userId}`;
+    }
+
+    // The folder shown last, for "After unlocking show: the folder used last". Folder names are private,
+    // so it is stored encrypted like the tree state.
+    lastFolderKey() {
+        return `vwm.lastfolder.${this.vault.userId}`;
+    }
+
+    saveLastFolder() {
+        clearTimeout(this._lastFolderTimer);
+        this._lastFolderTimer = setTimeout(async () => {
+            const key = this.tree?.selectedKey;
+            if (!key || !this.vault.userKey) return;
+            try {
+                localStorage.setItem(this.lastFolderKey(), await encryptString(key, this.vault.userKey));
+            } catch {
+                /* storage unavailable */
+            }
+        }, 300);
+    }
+
+    async selectStartFolder() {
+        let key = null;
+        if (settings.startFolder === "favorites") key = "fav";
+        else if (settings.startFolder !== "vault") {
+            try {
+                const enc = localStorage.getItem(this.lastFolderKey());
+                if (enc) key = await decryptString(enc, this.vault.userKey);
+            } catch {
+                key = null;
+            }
+        }
+        if (key && this.tree.model.nodes.has(key)) {
+            this.tree.select(key, true);
+        }
     }
 
     async loadTreeState() {
@@ -782,7 +902,15 @@ class App {
         this.statusRight = h("span", { class: "status-right" });
         this.statusNotice = h("button", { type: "button", class: "status-notice", hidden: true, onclick: () => this.openPendingConfirmations() });
         const status = h("div", { class: "statusbar" }, this.statusLeft, this.statusNotice, this.statusRight);
-        this.root.appendChild(h("div", { class: "main-view" }, this.menubar, this.toolbar, workspace, status));
+        this.statusbar = status;
+        this.taskbar = h("div", { class: "taskbar", role: "toolbar", "aria-label": "Open windows", hidden: true });
+        this.root.appendChild(h("div", { class: "main-view" }, this.menubar, this.toolbar, workspace, this.taskbar, status));
+        if (!this._windowsTracked) {
+            this._windowsTracked = true;
+            onWindowsChanged(() => this.renderTaskbar());
+            window.addEventListener("resize", () => this.renderTaskbar());
+        }
+        this.renderTaskbar();
         this.applyDetailsVisibility();
         this.detailsEl.style.height = `${settings.detailsHeight}px`;
         this.makeSplitter(vSplit, "x", (d) => {
@@ -796,8 +924,9 @@ class App {
 
         this.tree = new TreeView(treeEl, {
             onSelect: () => {
-                if (this.searchText) this.clearSearch(false);
+                if (this.searchText && settings.clearSearchOnFolder !== false) this.clearSearch(false);
                 this.refreshEntries(false);
+                this.saveLastFolder();
             },
             onContext: (node, x, y) => showMenu(this.groupMenuItems(node), x, y),
             groupIcon: (node) => this.groupIcon(node),
@@ -864,8 +993,10 @@ class App {
         let rows;
         let emptyText = "This folder is empty";
         if (this.searchText) {
-            const terms = this.searchText.toLowerCase().split(/\s+/).filter(Boolean);
-            rows = [...this.vault.ciphers.values()].filter((c) => !c.deletedDate && Vault.matches(c, terms));
+            const caseSensitive = !!settings.searchCase;
+            const terms = (caseSensitive ? this.searchText : this.searchText.toLowerCase()).split(/\s+/).filter(Boolean);
+            const scope = settings.searchInFolder && this.tree.selected ? ciphersForNode(this.vault, this.tree.selected, { includeSubfolders: true }) : [...this.vault.ciphers.values()];
+            rows = scope.filter((c) => !c.deletedDate && Vault.matches(c, terms, { searchPasswords: !!settings.searchPasswords, caseSensitive }));
             emptyText = "No matching entries";
         } else if (this.duplicateFilter) {
             rows = this.duplicateFilter.map((id) => this.vault.ciphers.get(id)).filter(Boolean);
@@ -908,6 +1039,7 @@ class App {
             ["Organizations", () => this.orgMenuItems()],
             ["View", () => this.viewMenuItems()],
             ["Tools", () => this.toolsMenuItems()],
+            ["Windows", () => this.windowMenuItems()],
             ["Help", () => this.helpMenuItems()],
         ];
         for (const [label, items] of menus) {
@@ -945,8 +1077,10 @@ class App {
     }
 
     buildToolbar() {
+        // The label is shown with "Icons and text" (Tools → Options)
+        const LABELS = { import: "Import", sync: "Sync", lock: "Lock", add: "Add", edit: "Edit", del: "Delete", copyUser: "User name", copyPass: "Password", clock: "TOTP", link: "Open URL", key: "Generator" };
         const btn = (iconName, title, action, extra = {}) =>
-            h("button", { type: "button", class: "tb-btn", title, "aria-label": title, onclick: action, ...extra }, icon(iconName));
+            h("button", { type: "button", class: "tb-btn", title, "aria-label": title, onclick: action, ...extra }, icon(iconName), h("span", { class: "tb-label" }, LABELS[iconName] || title));
         const addBtn = btn("add", "Add entry (Ctrl+I)", () => this.addEntry(CipherType.Login));
         addBtn.addEventListener("contextmenu", (e) => {
             e.preventDefault();
@@ -991,7 +1125,7 @@ class App {
             btn("clock", "Copy TOTP code (Ctrl+T)", () => this.copyField("totp")),
             btn("link", "Open URL (Ctrl+U)", () => this.openUrl()),
             h("span", { class: "tb-sep" }),
-            btn("key", "Password generator (Ctrl+G)", () => generatorDialog()),
+            btn("key", "Password generator (Ctrl+G)", () => this.openGenerator()),
             h("span", { class: "tb-spacer" }),
             themeToggleButton("tb-btn"),
             h("label", { class: "search-box" }, icon("search"), this.searchInput),
@@ -1169,7 +1303,7 @@ class App {
 
     toolsMenuItems() {
         return [
-            { label: "Password generator…", icon: "key", shortcut: "Ctrl+G", action: () => generatorDialog() },
+            { label: "Password generator…", icon: "key", shortcut: "Ctrl+G", action: () => this.openGenerator() },
             { label: "Find duplicate entries", action: () => this.findDuplicates() },
             "-",
             { label: "Merge duplicate folders", action: () => this.folderMaintenance("merge") },
@@ -1177,10 +1311,19 @@ class App {
             { label: "Create missing parent folders", action: () => this.folderMaintenance("repair") },
             { label: "Empty trash…", icon: "trash", action: () => this.emptyTrash() },
             "-",
-            { label: "Options…", action: async () => {
-                if (await settingsDialog()) applyTheme();
-            } },
+            { label: "Options…", action: () => this.openOptions() },
         ];
+    }
+
+    async openOptions() {
+        if (!(await settingsDialog())) return;
+        applyTheme();
+        applyAppearance();
+        if (!this.table) return;
+        this.applyDetailsVisibility();
+        this.refresh();
+        this.renderDetails(this.selected);
+        this.renderTaskbar();
     }
 
     helpMenuItems() {
@@ -1199,6 +1342,14 @@ class App {
     onGlobalKey(e) {
         if (!this.table || !this.vault.userKey || isDialogOpen()) return;
         if (document.querySelector(".menu")) return;
+        // Inside a window its own keys apply, only locking works everywhere
+        if (isInWindow(e.target)) {
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "l") {
+                e.preventDefault();
+                this.lock();
+            }
+            return;
+        }
         const inInput = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement;
         const ctrl = e.ctrlKey || e.metaKey;
         const key = e.key.toLowerCase();
@@ -1210,7 +1361,7 @@ class App {
         if (e.key === "F3") return run(() => this.focusSearch());
         if (e.key === "F5") return run(() => this.sync());
         if (ctrl && key === "l") return run(() => this.lock());
-        if (ctrl && key === "g") return run(() => generatorDialog());
+        if (ctrl && key === "g") return run(() => this.openGenerator());
         if (inInput) return;
         if (ctrl && key === "c" && !window.getSelection()?.toString()) return run(() => this.copyField("password"));
         if (ctrl && key === "b") return run(() => this.copyField("username"));
@@ -1269,16 +1420,24 @@ class App {
         const add = (label, value, opts = {}) => {
             if (!value && !opts.always) return;
             const val = h("span", { class: `dv${opts.mono ? " mono" : ""}${opts.pre ? " pre" : ""}` });
-            if (opts.secret) {
+            if (opts.secret || opts.concealed) {
+                // Secrets need the re-prompt, concealed values (Tools → Options) are only hidden from view
                 let shown = false;
-                const masked = "••••••••";
+                const masked = opts.pre ? "•••••• (click the eye to show)" : "••••••••";
                 val.textContent = masked;
+                const render = () => {
+                    clear(val);
+                    if (!shown) val.textContent = masked;
+                    else if (opts.secret && settings.colorPasswords) val.appendChild(colorizedPassword(value));
+                    else val.textContent = value;
+                };
                 const toggle = h("button", { type: "button", class: "icon-btn tiny", title: "Show / hide", onclick: async () => {
-                    if (!shown && !(await this.reprompt(v))) return;
+                    if (!shown && opts.secret && !(await this.reprompt(v))) return;
                     shown = !shown;
-                    val.textContent = shown ? value : masked;
+                    render();
                 } }, icon("eye"));
-                grid.append(h("span", { class: "dl" }, label), h("span", { class: "dvw" }, val, toggle, this.copyButton(() => this.copySecret(v, value, label))));
+                const copy = opts.noCopy ? "" : this.copyButton(() => (opts.secret ? this.copySecret(v, value, label) : copyText(value, label)));
+                grid.append(h("span", { class: "dl" }, label), h("span", { class: "dvw" }, val, toggle, copy));
                 return;
             }
             if (opts.link) {
@@ -1292,7 +1451,7 @@ class App {
         el.appendChild(h("div", { class: "details-title" }, this.entryIcon(v) || icon(typeIcon(v)), h("span", null, v.name || "(no title)"), v.favorite ? icon("star") : "", h("span", { class: "muted" }, this.groupName(v) ? `  —  ${this.groupName(v)}` : "")));
         if (v.decryptError) el.appendChild(h("div", { class: "form-error" }, "Parts of this item could not be decrypted."));
         if (v.login) {
-            add("User name", v.login.username);
+            add("User name", v.login.username, { concealed: !!settings.hideUsernames });
             if (v.login.password) {
                 if (v.viewPassword) add("Password", v.login.password, { secret: true, mono: true });
                 else add("Password", "(hidden by your organization)", { noCopy: true });
@@ -1333,7 +1492,7 @@ class App {
             else if (f.type === FieldType.Linked) add(f.name, `→ ${f.linkedId === 101 ? "Password" : "User name"}`, { noCopy: true });
             else add(f.name, f.value);
         }
-        if (v.notes) add("Notes", v.notes, { pre: true });
+        if (v.notes) add("Notes", v.notes, { pre: true, concealed: !!settings.hideNotes });
         if (v.attachments.length) {
             const list = h("span", { class: "dvw att-links" });
             for (const a of v.attachments) {
@@ -1438,6 +1597,8 @@ class App {
 
     onCellDblClick(v, col) {
         if (v.deletedDate) return this.editEntry(v);
+        if (settings.dblClickAction === "edit") return this.editEntry(v);
+        if (settings.dblClickAction === "url") return v.login?.uris?.length ? this.openUrl() : this.editEntry(v);
         if (col === "username" && v.login) return copyText(v.login.username, "User name");
         if (col === "password" && v.login) return this.copyField("password");
         if (col === "uri" && v.login?.uris?.length) return this.openUrl();
@@ -1468,6 +1629,7 @@ class App {
 
     async editEntry(v = this.single) {
         if (!v) return;
+        if (focusWindow(`entry:${v.id}`)) return;
         if (!(await this.reprompt(v))) return;
         const saved = await editEntryDialog(this, v, { readOnly: !!v.deletedDate });
         if (saved) {
@@ -1500,7 +1662,7 @@ class App {
             if (activeItems.length) {
                 if (activeItems.some((v) => v.edit === false)) return alertDialog("Delete", "You do not have permission to delete some of the selected items.");
                 const msg = activeItems.length === 1 ? `Move "${activeItems[0].name}" to the trash?` : `Move ${activeItems.length} entries to the trash?`;
-                if (!(await confirmDialog("Delete entries", msg, { ok: "Move to trash", danger: true }))) return;
+                if (settings.confirmDelete !== false && !(await confirmDialog("Delete entries", msg, { ok: "Move to trash", danger: true }))) return;
                 await this.vault.trashCiphers(activeItems.map((v) => v.id));
                 toast(`${activeItems.length} entr${activeItems.length === 1 ? "y" : "ies"} moved to the trash`, "ok");
             }

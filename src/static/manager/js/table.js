@@ -1,9 +1,8 @@
 // Entry list (right pane): a compact, virtualized table in the style of KeePass 2.
 
-import { h, icon, clear, settings, saveSettings, formatDate, firstLine } from "./ui.js";
+import { h, icon, clear, settings, saveSettings, formatDate, firstLine, rowHeight, colorizedPassword } from "./ui.js";
 import { CipherType, CipherTypeNames } from "./vault.js";
 
-const ROW_HEIGHT = 21;
 
 const TYPE_ICON = { 1: "login", 2: "note", 3: "card", 4: "identity", 5: "ssh" };
 
@@ -22,11 +21,16 @@ export function subtitle(view) {
 // Column definitions: key -> { title, width, value(view, ctx), sortValue? }
 export const COLUMNS = {
     name: { title: "Title", width: 220, value: (v) => v.name || "" },
-    username: { title: "User Name", width: 170, value: (v) => subtitle(v) },
+    // Tools → Options: user names can be hidden and passwords shown in the list (not for re-prompt items)
+    username: { title: "User Name", width: 170, value: (v) => (settings.hideUsernames && v.login?.username ? "••••••" : subtitle(v)), sortValue: (v) => subtitle(v) },
     password: {
         title: "Password",
         width: 110,
-        value: (v) => (v.login?.password ? (v.viewPassword ? "••••••••" : "(hidden)") : ""),
+        value: (v) => {
+            if (!v.login?.password) return "";
+            if (!v.viewPassword) return "(hidden)";
+            return settings.showPasswordsInList && v.reprompt !== 1 ? v.login.password : "••••••••";
+        },
         sortValue: () => "",
     },
     uri: { title: "URL", width: 220, value: (v) => v.login?.uris?.[0]?.uri || "" },
@@ -51,6 +55,11 @@ export class EntryTable {
         this.anchor = -1;
         this.el.classList.add("entry-table");
         this.el.tabIndex = 0;
+        // The rows are rendered again while the mouse button is down, which makes the browser drop the focus
+        // (the pressed row is gone), so keyboard navigation would not work after a click
+        this.el.addEventListener("mouseup", () => {
+            if (!this.el.contains(document.activeElement)) this.el.focus({ preventScroll: true });
+        });
         this.el.setAttribute("role", "grid");
         this.header = h("div", { class: "et-header", role: "row" });
         this.viewport = h("div", { class: "et-viewport" });
@@ -177,15 +186,15 @@ export class EntryTable {
 
     renderRows(force = false) {
         const total = this.rows.length;
-        this.spacer.style.height = `${total * ROW_HEIGHT}px`;
+        this.spacer.style.height = `${total * rowHeight()}px`;
         const top = this.viewport.scrollTop;
         const height = this.viewport.clientHeight || 400;
-        const start = Math.max(0, Math.floor(top / ROW_HEIGHT) - 5);
-        const end = Math.min(total, Math.ceil((top + height) / ROW_HEIGHT) + 5);
+        const start = Math.max(0, Math.floor(top / rowHeight()) - 5);
+        const end = Math.min(total, Math.ceil((top + height) / rowHeight()) + 5);
         if (!force && this._range && this._range[0] === start && this._range[1] === end) return;
         this._range = [start, end];
         clear(this.body);
-        this.body.style.transform = `translateY(${start * ROW_HEIGHT}px)`;
+        this.body.style.transform = `translateY(${start * rowHeight()}px)`;
         this.body.style.width = `${this.totalWidth}px`;
         const cols = this.columns;
         const ctx = this.h.ctx;
@@ -205,6 +214,8 @@ export class EntryTable {
                     cell.append(this.h.entryIcon?.(v) || icon(typeIcon(v)), h("span", { class: "et-text" }, text || "(no title)"));
                     if (v.favorite) cell.appendChild(icon("star", "et-fav"));
                     if (v.organizationId) cell.appendChild(icon("org", "et-shared"));
+                } else if (key === "password" && settings.colorPasswords && text && text === v.login?.password) {
+                    cell.appendChild(h("span", { class: "et-text" }, colorizedPassword(text)));
                 } else {
                     cell.textContent = text;
                 }
@@ -287,17 +298,17 @@ export class EntryTable {
     }
 
     ensureVisible(i) {
-        const top = i * ROW_HEIGHT;
+        const top = i * rowHeight();
         const vp = this.viewport;
         if (top < vp.scrollTop) vp.scrollTop = top;
-        else if (top + ROW_HEIGHT > vp.scrollTop + vp.clientHeight) vp.scrollTop = top + ROW_HEIGHT - vp.clientHeight;
+        else if (top + rowHeight() > vp.scrollTop + vp.clientHeight) vp.scrollTop = top + rowHeight() - vp.clientHeight;
     }
 
     onKey(e) {
         if (e.target !== this.el) return;
         const n = this.rows.length;
         if (!n) return;
-        const page = Math.max(1, Math.floor(this.viewport.clientHeight / ROW_HEIGHT) - 1);
+        const page = Math.max(1, Math.floor(this.viewport.clientHeight / rowHeight()) - 1);
         let i = this.focusIndex;
         const move = (to) => {
             e.preventDefault();
