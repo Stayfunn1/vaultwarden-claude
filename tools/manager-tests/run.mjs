@@ -6,7 +6,7 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const DEFAULT_SUITES = ["interop", "keepass-import", "regressions", "ui", "sso", "sso-groups", "sso-directory"];
+const DEFAULT_SUITES = ["interop", "keepass-import", "regressions", "ui", "orgs", "sso", "sso-groups", "sso-directory"];
 
 if (!process.env.VWM_TESTS_CHILD) {
     // Node only reads NODE_EXTRA_CA_CERTS at startup, so create the certificate first and run the tests in a child process
@@ -31,7 +31,7 @@ try {
         console.log(`\n===== ${name} =====`);
         try {
             // The SSO suites run their own server with SSO settings
-            if (!name.startsWith("sso") && !main) main = await env.startServer({ fresh: true });
+            if (!name.startsWith("sso") && !main) main = await env.startServer({ fresh: true, env: { ORG_GROUPS_ENABLED: "true" } });
             const suite = await import(`./suites/${name}.mjs`);
             await suite.run({ base: main?.base });
             passed.push(name);

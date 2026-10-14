@@ -23,6 +23,9 @@ import {
     hashMasterKey,
     decryptUserKey,
     CryptoError,
+    generateRsaKeyPair,
+    rsaEncrypt,
+    b64encode,
 } from "./bwcrypto.js";
 
 export const CipherType = Object.freeze({
@@ -987,6 +990,43 @@ export class Vault {
         }
         this.changed("folder");
         return sorted.length;
+    }
+
+    // ----- Organizations ------------------------------------------------------------------
+
+    // Owners, admins and members with the "manage users" permission manage the members of an organization
+    canManageOrg(organizationId) {
+        const org = this.organizations.get(organizationId);
+        return !!org && org.status === 2 && (org.type === 0 || org.type === 1 || !!org.permissions?.manageUsers);
+    }
+
+    // Creates an organization like the Bitwarden clients: the organization key and its RSA key pair are made here,
+    // the server only gets them encrypted (with the public key of this account and the organization key)
+    async createOrganization(name, collectionName) {
+        const orgKey = SymmetricKey.generate();
+        const { pkcs8, spki } = await generateRsaKeyPair();
+        const { publicKey } = await this.api.get(`/api/users/${this.userId}/public-key`);
+        const res = await this.api.post("/api/organizations", {
+            name,
+            billingEmail: this.profile.email,
+            collectionName: await encryptString(normalizeFolderPath(collectionName), orgKey),
+            key: await rsaEncrypt(orgKey.raw, publicKey),
+            keys: { publicKey: b64encode(spki), encryptedPrivateKey: await encryptBytes(pkcs8, orgKey) },
+            planType: 0,
+        });
+        return res.id;
+    }
+
+    // Gives accepted members the organization key, encrypted with their public key. Returns the members which failed.
+    async confirmMembers(organizationId, members) {
+        const orgKey = this.baseKeyFor(organizationId);
+        const keys = [];
+        for (const m of members) {
+            const { publicKey } = await this.api.get(`/api/users/${m.userId}/public-key`);
+            keys.push({ id: m.id, key: await rsaEncrypt(orgKey.raw, publicKey) });
+        }
+        const res = await this.api.post(`/api/organizations/${organizationId}/users/confirm`, { keys });
+        return (res.data || []).filter((r) => r.error);
     }
 
     // ----- Collections --------------------------------------------------------------------

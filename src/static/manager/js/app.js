@@ -3,7 +3,24 @@
 
 import { Api, ApiError, TwoFactorRequired, TwoFactorType, decodeJwt } from "./api.js";
 import { Vault, CipherType, CipherTypeNames, FieldType, cloneView, newCipherView, normalizeFolderPath, parentPath, leafName, isSameOrDescendant, sanitizeSegment } from "./vault.js";
-import { deriveMasterKey, hashMasterKey, pkcePair, randomBytes, b64urlEncode, b64urlDecode, b64encode, totpCode, pbkdf2, utf8, encryptString, decryptString } from "./bwcrypto.js";
+import {
+    deriveMasterKey,
+    hashMasterKey,
+    stretchMasterKey,
+    pkcePair,
+    randomBytes,
+    b64urlEncode,
+    b64urlDecode,
+    b64encode,
+    totpCode,
+    pbkdf2,
+    utf8,
+    encryptString,
+    decryptString,
+    encryptBytes,
+    generateRsaKeyPair,
+    SymmetricKey,
+} from "./bwcrypto.js";
 import {
     h, icon, clear, settings, saveSettings, toast, copyText, clipboardState, showMenu, closeMenus, dialog, confirmDialog, promptDialog,
     alertDialog, progressDialog, isDialogOpen, closeAllDialogs, formatDate, formatBytes, downloadBlob, safeUrl,
@@ -12,6 +29,7 @@ import { TreeView, ciphersForNode, folderKey, collectionKey } from "./tree.js";
 import { EntryTable, COLUMNS, typeIcon } from "./table.js";
 import { editEntryDialog } from "./editor.js";
 import { generatorDialog, importKeePassDialog, shareDialog, collectionsDialog, settingsDialog, shortcutsDialog } from "./dialogs.js";
+import { newOrganizationDialog, organizationDialog, collectionAccessDialog, pendingConfirmations } from "./orgs.js";
 
 const SESSION_KEY = "vwm.session";
 // Card, identity and SSH key values which are treated like passwords
@@ -203,6 +221,7 @@ class App {
             }
         }
         if (!resp.Key) {
+            if (sso) return this.showSetPassword(resp, email);
             throw new Error("Your account has no master password yet. Finish setting up your account in the Bitwarden web vault or app first, then log in here.");
         }
         const kdf = { kdf: resp.Kdf, kdfIterations: resp.KdfIterations, kdfMemory: resp.KdfMemory, kdfParallelism: resp.KdfParallelism };
@@ -215,6 +234,74 @@ class App {
         } else {
             this.showUnlock();
         }
+    }
+
+    // First single sign-on of a new account: choose the master password, which encrypts the vault.
+    // The keys are made here like in the Bitwarden clients, the server only gets them encrypted.
+    showSetPassword(resp, email) {
+        const policy = resp.MasterPasswordPolicy || {};
+        const minLength = Math.max(12, Number(policy.minLength) || 0);
+        const rules = [
+            [`at least ${minLength} characters`, (p) => p.length >= minLength],
+            policy.requireUpper ? ["an upper case letter", (p) => /[A-Z]/.test(p)] : null,
+            policy.requireLower ? ["a lower case letter", (p) => /[a-z]/.test(p)] : null,
+            policy.requireNumbers ? ["a number", (p) => /[0-9]/.test(p)] : null,
+            policy.requireSpecial ? ["a special character", (p) => /[^A-Za-z0-9]/.test(p)] : null,
+        ].filter(Boolean);
+        const err = h("div", { class: "form-error", role: "alert" });
+        const password = h("input", { type: "password", class: "wide", autocomplete: "new-password" });
+        const repeat = h("input", { type: "password", class: "wide", autocomplete: "new-password" });
+        const hint = h("input", { type: "text", class: "wide", autocomplete: "off" });
+        const btn = h("button", { type: "submit", class: "primary wide" }, "Set master password");
+        const form = h(
+            "form",
+            { class: "auth-form" },
+            h("div", { class: "muted" }, `Welcome ${email}. Choose the master password of your vault. It encrypts all your entries and is never sent to the server, so it can not be reset. Required: ${rules.map((r) => r[0]).join(", ")}.`),
+            h("label", { class: "field" }, h("span", null, "Master password"), password),
+            h("label", { class: "field" }, h("span", null, "Repeat master password"), repeat),
+            h("label", { class: "field" }, h("span", null, "Hint (optional, shown to anyone asking for it)"), hint),
+            btn,
+            err,
+        );
+        form.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            err.textContent = "";
+            const pw = password.value;
+            const missing = rules.filter(([, test]) => !test(pw)).map(([text]) => text);
+            if (missing.length) return (err.textContent = `The master password needs ${missing.join(", ")}.`);
+            if (pw !== repeat.value) return (err.textContent = "The passwords do not match.");
+            if (hint.value && hint.value.trim() === pw) return (err.textContent = "The hint can not be the password.");
+            btn.disabled = true;
+            btn.textContent = "Setting up…";
+            try {
+                const kdf = { kdf: 0, kdfIterations: 600000, kdfMemory: null, kdfParallelism: null };
+                const masterKey = await deriveMasterKey(pw, email, kdf);
+                const userKey = SymmetricKey.generate();
+                const key = await encryptBytes(userKey.raw, await stretchMasterKey(masterKey));
+                const { pkcs8, spki } = await generateRsaKeyPair();
+                await this.api.post("/api/accounts/set-password", {
+                    masterPasswordHash: await hashMasterKey(masterKey, pw),
+                    masterPasswordHint: hint.value.trim() || null,
+                    key,
+                    keys: { publicKey: b64encode(spki), encryptedPrivateKey: await encryptBytes(pkcs8, userKey) },
+                    ...kdf,
+                    orgIdentifier: null,
+                });
+                await this.completeLogin(
+                    { ...resp, Key: key, Kdf: kdf.kdf, KdfIterations: kdf.kdfIterations, KdfMemory: null, KdfParallelism: null },
+                    email,
+                    pw,
+                    masterKey,
+                    true,
+                );
+            } catch (ex) {
+                err.textContent = ex.message || String(ex);
+                btn.disabled = false;
+                btn.textContent = "Set master password";
+            }
+        });
+        this.authFrame("Set up your vault", form);
+        password.focus();
     }
 
     async rememberPasswordCheck(masterKey, password) {
@@ -482,6 +569,65 @@ class App {
         this.buildMain();
         await this.loadTreeState();
         this.refresh();
+        this.checkPendingConfirmations();
+    }
+
+    // ----- Organizations ---------------------------------------------------------------------------
+
+    // Shows a notice in the status bar when members wait for confirmation in an organization the user manages
+    async checkPendingConfirmations() {
+        try {
+            this.pending = await pendingConfirmations(this.vault);
+        } catch {
+            this.pending = new Map();
+        }
+        if (!this.statusNotice) return;
+        const total = [...this.pending.values()].reduce((a, b) => a + b, 0);
+        this.statusNotice.hidden = total === 0;
+        this.statusNotice.textContent = `⚠ ${total} member${total === 1 ? "" : "s"} waiting for confirmation`;
+        this.statusNotice.title = [...this.pending].map(([id, n]) => `${this.vault.organizations.get(id)?.name}: ${n}`).join("\n");
+    }
+
+    openPendingConfirmations() {
+        const orgId = [...(this.pending || new Map()).keys()][0];
+        if (orgId) this.manageOrganization(orgId);
+    }
+
+    async newOrganization() {
+        const id = await newOrganizationDialog(this);
+        if (!id) return;
+        await this.sync(true);
+        toast("Organization created", "ok");
+        if (this.tree) this.tree.select(collectionKey(id, ""), true);
+    }
+
+    async manageOrganization(orgId, tab) {
+        if (!this.vault.orgKeys.has(orgId)) {
+            return alertDialog("Organization", "Your membership in this organization is not confirmed yet, so its data can not be decrypted here.");
+        }
+        const changed = await organizationDialog(this, orgId, tab);
+        if (changed) await this.sync(true);
+        this.checkPendingConfirmations();
+    }
+
+    async collectionAccess(collectionId) {
+        if (await collectionAccessDialog(this, collectionId)) await this.sync(true);
+    }
+
+    orgMenuItems() {
+        const orgs = [...this.vault.organizations.values()].sort((a, b) => a.name.localeCompare(b.name));
+        const items = [{ label: "New organization…", icon: "add", action: () => this.newOrganization() }, "-"];
+        if (!orgs.length) items.push({ label: "(no organizations)", disabled: true });
+        for (const o of orgs) {
+            const n = this.pending?.get(o.id);
+            items.push({
+                label: `${o.name}${n ? ` (${n} to confirm)` : ""}…`,
+                icon: "org",
+                action: () => this.manageOrganization(o.id),
+                disabled: !this.vault.canManageOrg(o.id),
+            });
+        }
+        return items;
     }
 
     // The expanded folders are remembered per account. Their keys contain folder names, so they are
@@ -525,7 +671,8 @@ class App {
         const workspace = h("div", { class: "workspace" }, this.leftPane, vSplit, this.rightPane);
         this.statusLeft = h("span", { class: "status-left" });
         this.statusRight = h("span", { class: "status-right" });
-        const status = h("div", { class: "statusbar" }, this.statusLeft, this.statusRight);
+        this.statusNotice = h("button", { type: "button", class: "status-notice", hidden: true, onclick: () => this.openPendingConfirmations() });
+        const status = h("div", { class: "statusbar" }, this.statusLeft, this.statusNotice, this.statusRight);
         this.root.appendChild(h("div", { class: "main-view" }, this.menubar, this.toolbar, workspace, status));
         this.applyDetailsVisibility();
         this.detailsEl.style.height = `${settings.detailsHeight}px`;
@@ -647,6 +794,7 @@ class App {
             ["File", () => this.fileMenuItems()],
             ["Edit", () => this.entryMenuItems(true)],
             ["Group", () => this.groupMenuItems(this.tree?.selected)],
+            ["Organizations", () => this.orgMenuItems()],
             ["View", () => this.viewMenuItems()],
             ["Tools", () => this.toolsMenuItems()],
             ["Help", () => this.helpMenuItems()],
@@ -842,7 +990,10 @@ class App {
                 { label: "Add sub collection…", icon: "add", shortcut: "Insert", action: () => this.addGroup(node) },
                 { label: "Rename collection…", icon: "edit", shortcut: "F2", action: () => this.renameGroup(node), disabled: node.kind !== "collection" || node.virtual },
                 { label: "Delete collection…", icon: "del", shortcut: "Del", action: () => this.deleteGroup(node), disabled: node.kind !== "collection" },
-                this.config.webVaultEnabled ? { label: "Manage members and groups…", icon: "org", action: () => window.open(`${BASE_URL}/#/organizations/${node.orgId}/members`, "_blank", "noopener") } : null,
+                "-",
+                { label: "Collection access…", icon: "user", action: () => this.collectionAccess(node.collectionIds[0]), disabled: node.kind !== "collection" || !node.collectionIds?.length || !this.vault.canManageOrg(node.orgId) },
+                { label: "Manage organization…", icon: "org", action: () => this.manageOrganization(node.orgId), disabled: !this.vault.canManageOrg(node.orgId) },
+                this.config.webVaultEnabled ? { label: "Open in the Bitwarden web vault", action: () => window.open(`${BASE_URL}/#/organizations/${node.orgId}/members`, "_blank", "noopener") } : null,
             );
         } else if (node.kind === "trash") {
             items.push(
@@ -1622,6 +1773,7 @@ class App {
         if (applied) {
             this.refresh();
             if (selection.length) this.table.selectIds(selection.filter((id) => this.vault.ciphers.has(id)));
+            if (!silent) this.checkPendingConfirmations();
         }
         return applied;
     }

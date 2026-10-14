@@ -144,6 +144,33 @@ export async function run() {
             await browser.close();
         }
 
+        console.log("\n--- First login of a provisioned user in the manager ---");
+        idp.setUser({ sub: "kc-frank", email: "frank@example.com", groups: ["/vw-users"] });
+        {
+            const { browser, page, errors } = await launchBrowser();
+            try {
+                await page.goto(`${base}/manager/`);
+                await page.click("text=Log in with single sign-on (SSO)");
+                await page.waitForSelector("text=Set up your vault", { timeout: 60000 });
+                const inputs = page.locator("input[type=password]");
+                await inputs.nth(0).fill("too short");
+                await inputs.nth(1).fill("too short");
+                await page.click("button[type=submit]");
+                assert((await page.locator(".form-error").textContent()).includes("at least 12 characters"), "master password rules enforced");
+                await inputs.nth(0).fill(password);
+                await inputs.nth(1).fill(password);
+                await page.screenshot({ path: screenshotPath("21-set-master-password") });
+                await page.click("button[type=submit]");
+                await page.waitForSelector(".main-view", { timeout: 60000 });
+                assert(true, "master password set, vault opened");
+                assert(errors.length === 0, `no browser errors (${errors.join(" | ")})`);
+            } finally {
+                await browser.close();
+            }
+            const frank = await login(base, "frank@example.com", password);
+            assert(!!frank.vault.privateKey, "the new master password unlocks the account keys");
+        }
+
         console.log("\n--- Failures change nothing ---");
         idp.setAdminStatus(403);
         r = await sync();

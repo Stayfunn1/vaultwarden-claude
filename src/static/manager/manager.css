@@ -1364,3 +1364,111 @@ kbd {
         width: 80px;
     }
 }
+
+/* ----- Organizations ----- */
+
+.status-notice {
+    border: none;
+    background: none;
+    color: var(--warn);
+    font: inherit;
+    cursor: pointer;
+    padding: 0 8px;
+}
+
+.status-notice:hover {
+    text-decoration: underline;
+}
+
+.org-dialog {
+    display: flex;
+    flex-direction: column;
+    min-height: 360px;
+    max-height: 70vh;
+}
+
+.org-tab-body {
+    min-height: 300px;
+}
+
+.org-status {
+    min-height: 18px;
+    padding-top: 4px;
+}
+
+.org-invite {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+.org-invite input {
+    flex: 1;
+}
+
+.org-notice {
+    color: var(--warn);
+}
+
+.org-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.org-table th {
+    text-align: left;
+    font-weight: normal;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    padding: 3px 6px;
+}
+
+.org-table td {
+    border-bottom: 1px solid var(--border-light);
+    padding: 3px 6px;
+    vertical-align: middle;
+}
+
+.org-table tr.revoked td {
+    color: var(--muted);
+}
+
+.org-actions {
+    text-align: right;
+    white-space: nowrap;
+}
+
+.org-actions button + button {
+    margin-left: 4px;
+}
+
+.member-status.status-1 {
+    color: var(--warn);
+    font-weight: 600;
+}
+
+.member-status.status--1 {
+    color: var(--danger);
+}
+
+.member-status.status-2 {
+    color: var(--ok);
+}
+
+.tag {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 0 5px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    font-size: 10px;
+    color: var(--muted);
+}
+
+.check-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    max-height: 50vh;
+    overflow: auto;
+}

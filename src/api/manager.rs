@@ -41,6 +41,7 @@ const FILES: &[(&str, &[u8])] = manager_files![
     "js/editor.js",
     "js/importer.js",
     "js/keepass.js",
+    "js/orgs.js",
     "js/sso-callback.js",
     "js/table.js",
     "js/tree.js",
