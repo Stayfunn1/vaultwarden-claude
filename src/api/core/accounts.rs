@@ -268,6 +268,12 @@ async fn is_email_2fa_required(member_id: Option<MembershipId>, conn: &DbConn) -
 }
 
 pub async fn register(data: Json<RegisterData>, conn: DbConn) -> JsonResult {
+    // With SSO only, accounts (including invited ones) are created by logging in through SSO.
+    // An account registered with only a master password could never log in, but it would claim the e-mail address.
+    if CONFIG.sso_enabled() && CONFIG.sso_only() {
+        err!("Registration with a master password is disabled, log in with SSO instead")
+    }
+
     let data: RegisterData = data.into_inner();
     let email = data.email.to_lowercase();
 

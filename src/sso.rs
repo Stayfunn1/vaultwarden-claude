@@ -183,6 +183,10 @@ pub fn decode_state(base64_state: &str) -> ApiResult<OIDCState> {
     Ok(state)
 }
 
+pub fn manager_sso_callback_url() -> String {
+    format!("{}/manager/sso-callback.html", CONFIG.domain())
+}
+
 // redirect_uri from: https://github.com/bitwarden/server/blob/main/src/Identity/IdentityServer/StaticClientStore.cs
 pub async fn authorize_url(
     state: OIDCState,
@@ -197,6 +201,10 @@ pub async fn authorize_url(
         (8065..=8070).map(|port| format!("http://localhost:{port}")).find(|uri| uri == raw_redirect_uri);
 
     let redirect_uri = match client_id {
+        // The web manager (`/manager/`) has its own callback page, which also works without the web-vault
+        "web" if CONFIG.web_manager_enabled() && raw_redirect_uri == manager_sso_callback_url() => {
+            manager_sso_callback_url()
+        }
         "web" | "browser" => format!("{}/sso-connector.html", CONFIG.domain()),
         "desktop" => localhost_redirect_uri.unwrap_or_else(|| "bitwarden://sso-callback".to_owned()),
         "mobile" => "bitwarden://sso-callback".to_owned(),

@@ -622,6 +622,10 @@ async fn user_api_key_login(
     conn: &DbConn,
     ip: &ClientIp,
 ) -> JsonResult {
+    if CONFIG.sso_enabled() && CONFIG.sso_only() && !CONFIG.sso_only_allow_api_key() {
+        err!("SSO sign-in is required", format!("IP: {}. API key login refused, SSO_ONLY is active.", ip.ip))
+    }
+
     // Get the user via the client_id
     let client_id = data.client_id.as_ref().unwrap();
     let Some(client_user_id) = client_id.strip_prefix("user.") else {
@@ -1055,6 +1059,10 @@ async fn register_verification_email(
     conn: DbConn,
 ) -> ApiResult<RegisterVerificationResponse> {
     crate::ratelimit::check_limit_unauthenticated(&ip.ip)?;
+
+    if CONFIG.sso_enabled() && CONFIG.sso_only() {
+        err!("Registration with a master password is disabled, log in with SSO instead")
+    }
 
     let data = data.into_inner();
 

@@ -582,6 +582,8 @@ make_config! {
         domain_path:            String, false,  auto,   |c| extract_url_path(&c.domain);
         /// Enable web vault
         web_vault_enabled:      bool,   false,  def,    true;
+        /// Enable web manager |> Serve the compact KeePass-style vault manager and KeePass importer at `/manager/`
+        web_manager_enabled:    bool,   false,  def,    true;
 
         /// Allow Sends |> Controls whether users are allowed to create Bitwarden Sends.
         /// This setting applies globally to all users. To control this on a per-org basis instead, use the "Disable Send" org policy.
@@ -818,6 +820,8 @@ make_config! {
         sso_enabled:                    bool,   true,   def,    false;
         /// Only SSO login |> Disable Email+Master Password login
         sso_only:                       bool,   true,   def,    false;
+        /// Allow personal API key login when SSO only |> When disabled, the personal API key (used by the Bitwarden CLI) can not be used to log in while `SSO_ONLY` is active
+        sso_only_allow_api_key:         bool,   true,   def,    true;
         /// Allow SSO flow to create account |> You probably want to disable it when using a public provider
         sso_signups_allowed:            bool,   true,   def,    true;
         /// Allow email association |> Associate existing non-SSO user based on email
