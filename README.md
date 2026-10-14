@@ -26,6 +26,22 @@ An alternative server implementation of the Bitwarden Client API, written in Rus
 
 <br>
 
+## Additions in this fork
+
+ * **Web manager** at `/manager/`: a compact, KeePass 2 style vault manager for large vaults, with a real folder
+   tree (drag & drop, renaming and moving whole folder trees, cleanup tools), a dense entry list, KeePass keyboard
+   shortcuts and an entry editor for custom fields, attachments, TOTP and history. All encryption happens in the
+   browser, so it works side by side with every official Bitwarden client. See [docs/web-manager.md](docs/web-manager.md).
+ * **KeePass import** (`.kdbx` and KeePass XML) that keeps nested groups, custom (protected) fields, attachments,
+   TOTP, password history and field references, into your own vault or an organization.
+   See [docs/web-manager.md](docs/web-manager.md#migrating-from-keepass).
+ * **Stricter SSO only mode**: with `SSO_ONLY=true` master passwords can not be used against the server at all
+   (no password logins, no password registration, no password based 2FA e-mails), optionally also no API key logins
+   (`SSO_ONLY_ALLOW_API_KEY=false`). See [docs/sso-only.md](docs/sso-only.md).
+ * Guide for sharing with organizations, collections and groups: [docs/sharing.md](docs/sharing.md).
+
+<br>
+
 ## Features
 
 A nearly complete implementation of the Bitwarden Client API is provided, including:
